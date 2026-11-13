@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="da">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Ansøgeren</title>
+  <meta name="description" content="Skriv jobansøgninger og CV med Claude som hjælper.">
+  <meta name="theme-color" content="#2f5d50">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css?v=2">
+</head>
+<body>
+  <div id="app"></div>
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheet-backdrop" data-close></div>
+    <div class="sheet-panel" role="dialog" aria-modal="true">
+      <div class="sheet-grip"></div>
+      <div id="sheetBody"></div>
+    </div>
+  </div>
+  <div id="toast" class="toast" hidden></div>
+  <input type="file" id="fileInput" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden>
+  <input type="file" id="backupInput" accept=".json,application/json" hidden>
+  <div id="printArea"></div>
+
+  <script src="app.js?v=2"></script>
+  <!-- hub-stats visit counter -->
+  <script>(function(){try{var A="ansoeger",K="hubdev",d=localStorage.getItem(K);if(!d){d=(self.crypto&&crypto.randomUUID?crypto.randomUUID():Date.now()+"."+Math.random().toString(36).slice(2));localStorage.setItem(K,d);}var u="https://hub-stats.mathiasjob.workers.dev/hit",R=(function(){try{var x=document.referrer;if(!x)return"";x=new URL(x);var h=location.host;if(x.host!==h)return x.host;if(/\.github\.io$/.test(h)){var s=x.pathname.split("/")[1]||"",m=location.pathname.split("/")[1]||"";return s===m?"self":h+"/"+s;}return"self";}catch(e){return""}})(),b=JSON.stringify({app:A,d:d,r:R});if(navigator.sendBeacon){navigator.sendBeacon(u,b);}else{fetch(u,{method:"POST",body:b,keepalive:true,mode:"no-cors"});}}catch(e){}})();</script>
+</body>
+</html>
