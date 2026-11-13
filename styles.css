@@ -289,6 +289,7 @@ textarea.inp { min-height: 120px; resize: vertical; line-height: 1.45; }
 @media print {
   @page { size: A4; margin: 16mm 0 14mm; }
   @page :first { margin-top: 0; }
+  :root, :root[data-theme] { color-scheme: light !important; --bg: #fff !important; }
   html, body { background: #fff !important; }
   body > *:not(#printArea) { display: none !important; }
   #printArea { display: block; }
