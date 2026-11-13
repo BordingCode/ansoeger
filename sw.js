@@ -1,7 +1,7 @@
 // Ansøgeren service worker: app shell works offline. API calls always go to the network.
-const CACHE = "ansoeger-v2";
+const CACHE = "ansoeger-v3";
 const SHELL = [
-  "./", "index.html", "styles.css?v=2", "app.js?v=2", "manifest.webmanifest",
+  "./", "index.html", "styles.css?v=3", "app.js?v=3", "manifest.webmanifest",
   "icons/icon-192.png", "icons/icon-512.png",
   "vendor/mammoth.browser.min.js", "vendor/docx.umd.js",
 ];
@@ -13,7 +13,14 @@ self.addEventListener("activate", (e) => {
 });
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
-  if (e.request.method !== "GET" || url.origin !== location.origin) return;
+  if (e.request.method !== "GET") return;
+  if (/fonts\.(googleapis|gstatic)\.com$/.test(url.hostname)) {
+    e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request).then((r) => {
+      const copy = r.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); return r;
+    })));
+    return;
+  }
+  if (url.origin !== location.origin) return;
   if (e.request.mode === "navigate") {
     // Fresh page when online, cached when offline.
     e.respondWith(fetch(e.request).catch(() => caches.match("index.html")));
