@@ -770,6 +770,16 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
   }
 
   function printDoc(doc) {
+    preparePrint(doc);
+    const old = document.title;
+    document.title = safeName(fileBase(doc)); // becomes the PDF file name
+    const restore = () => { document.title = old; window.removeEventListener("afterprint", restore); };
+    window.addEventListener("afterprint", restore);
+    setTimeout(() => window.print(), 50);
+    setTimeout(restore, 60000);
+  }
+
+  function preparePrint(doc) {
     const area = $("#printArea");
     area.innerHTML = pageHtml(doc);
     if (S.settings.template === "minstil" && doc.type === "cv") {
@@ -783,12 +793,6 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
       }`;
       area.appendChild(st);
     }
-    const old = document.title;
-    document.title = safeName(fileBase(doc)); // becomes the PDF file name
-    const restore = () => { document.title = old; window.removeEventListener("afterprint", restore); };
-    window.addEventListener("afterprint", restore);
-    setTimeout(() => window.print(), 50);
-    setTimeout(restore, 60000);
   }
 
   // ---------------------------------------------------------------- sheet & toast
@@ -1318,5 +1322,5 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 
   // Small debug hook for testing (no secrets in it).
-  window.__ans = { get state() { return S; }, htmlToMd, mdToHtml, mdBlocks, parseAnswer, importDocx, makeDocx, pageHtml };
+  window.__ans = { get state() { return S; }, htmlToMd, mdToHtml, mdBlocks, parseAnswer, importDocx, makeDocx, pageHtml, preparePrint, runAi };
 })();
