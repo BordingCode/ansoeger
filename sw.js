@@ -1,7 +1,7 @@
 // Ansøgeren service worker: app shell works offline. API calls always go to the network.
-const CACHE = "ansoeger-v6";
+const CACHE = "ansoeger-v7";
 const SHELL = [
-  "./", "index.html", "styles.css?v=6", "app.js?v=6", "manifest.webmanifest",
+  "./", "index.html", "styles.css?v=7", "app.js?v=7", "manifest.webmanifest",
   "icons/icon-192.png", "icons/icon-512.png",
   "vendor/mammoth.browser.min.js", "vendor/docx.umd.js",
 ];

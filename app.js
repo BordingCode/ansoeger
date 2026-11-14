@@ -459,6 +459,21 @@ ${doc.md}
 
 ${FORMAT_TEXT}`,
     },
+    forkort: {
+      icon: "layout", title: "Forkort til én side", desc: "Skærer teksten ned, så den kan stå på én side.",
+      kind: "text", hidden: true,
+      build: (doc, cv, q) => {
+        const m = JSON.parse(q);
+        return `Ansøgningen fylder ${String(m.pages).replace(".", ",")} A4-sider med det valgte layout og skal ned på én side. Den er på ${m.words} ord; forkort den til højst ${m.target} ord.
+Skær først i gentagelser, fyldord, generelle floskler og det, der er mindst relevant for jobopslaget. Bevar de stærkeste konkrete eksempler, alle fakta, tonen, opbygningen og overskrifterne. Tilføj ikke noget nyt. Skriv i <noter> kort hvad du har skåret.
+${doc.jobAd ? `\n<jobopslag>\n${doc.jobAd}\n</jobopslag>\n` : ""}
+<tekst>
+${doc.md}
+</tekst>
+
+${FORMAT_TEXT}`;
+      },
+    },
     frit: {
       icon: "chat", title: "Spørg Claude", desc: "Stil dit eget spørgsmål om teksten.",
       kind: "answer", free: true,
@@ -480,10 +495,11 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     return { text: t ? t[1].trim() : null, notes: n ? n[1].trim() : "", rest };
   }
 
-  let aiRun = 0;
+  let aiRun = 0, lastQuestion;
   async function runAi(doc, key, question) {
     const a = AI_ACTIONS[key];
     const cv = pickedCv(doc);
+    lastQuestion = question;
     const prompt = a.build(doc, cv, question);
     const run = ++aiRun;
     sheetAiWaiting(a);
@@ -612,10 +628,20 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     }
   }
 
+  // "Få den ned på én side": doc.fit < 1 shrinks text, spacing and margins by that factor.
+  const FIT_MIN = 0.85; // ≈ 9.4 pt body text: smaller stops looking nice
+  function setZoom(page, z) {
+    page.classList.toggle("fit", z < 1);
+    if (z < 1) page.style.setProperty("--z", z); else page.style.removeProperty("--z");
+  }
+  const fitOf = (doc) => (doc.fit > 0 && doc.fit < 1 ? doc.fit : 1);
+  const zScaler = (doc) => { const z = fitOf(doc); return (n) => Math.max(1, Math.round(n * z)); };
+
   async function makeDocx(doc) {
     {
       await loadScript("vendor/docx.umd.js");
       const docx = window.docx;
+      const Z = zScaler(doc);
       if (S.settings.template === "minstil") return docx.Packer.toBlob(minstilDocx(docx, doc));
       const tpl = S.settings.template, acc = S.settings.accent.replace("#", "");
       const font = tpl === "klassisk" ? "Georgia" : "Arial";
@@ -623,41 +649,42 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
       const kids = [];
       const contact = [p.email, p.phone, p.city, p.web].filter(Boolean).join("  ·  ");
       if (p.name) {
-        kids.push(new docx.Paragraph({ alignment: tpl === "klassisk" ? docx.AlignmentType.CENTER : docx.AlignmentType.LEFT, children: [new docx.TextRun({ text: p.name, bold: true, size: 44, color: tpl === "moderne" ? acc : "1F2328" })] }));
-        if (p.title) kids.push(new docx.Paragraph({ alignment: tpl === "klassisk" ? docx.AlignmentType.CENTER : docx.AlignmentType.LEFT, children: [new docx.TextRun({ text: p.title, size: 24, color: "555555" })] }));
-        if (contact) kids.push(new docx.Paragraph({ alignment: tpl === "klassisk" ? docx.AlignmentType.CENTER : docx.AlignmentType.LEFT, spacing: { after: 300 }, border: { bottom: { style: docx.BorderStyle.SINGLE, size: 8, color: acc, space: 8 } }, children: [new docx.TextRun({ text: contact, size: 19, color: "555555" })] }));
+        kids.push(new docx.Paragraph({ alignment: tpl === "klassisk" ? docx.AlignmentType.CENTER : docx.AlignmentType.LEFT, children: [new docx.TextRun({ text: p.name, bold: true, size: Z(44), color: tpl === "moderne" ? acc : "1F2328" })] }));
+        if (p.title) kids.push(new docx.Paragraph({ alignment: tpl === "klassisk" ? docx.AlignmentType.CENTER : docx.AlignmentType.LEFT, children: [new docx.TextRun({ text: p.title, size: Z(24), color: "555555" })] }));
+        if (contact) kids.push(new docx.Paragraph({ alignment: tpl === "klassisk" ? docx.AlignmentType.CENTER : docx.AlignmentType.LEFT, spacing: { after: Z(300) }, border: { bottom: { style: docx.BorderStyle.SINGLE, size: 8, color: acc, space: 8 } }, children: [new docx.TextRun({ text: contact, size: Z(19), color: "555555" })] }));
       }
       if (doc.type === "ansoegning") {
         const left = [doc.company, doc.position && "Att.: " + doc.position].filter(Boolean).join("\n");
         const right = `${p.city ? p.city + ", " : ""}${fmtDate(Date.now())}`;
-        if (left) kids.push(new docx.Paragraph({ children: runsFor(docx, left, { size: 21 }) }));
-        kids.push(new docx.Paragraph({ alignment: docx.AlignmentType.RIGHT, spacing: { after: 360 }, children: [new docx.TextRun({ text: right, size: 21 })] }));
+        if (left) kids.push(new docx.Paragraph({ children: runsFor(docx, left, { size: Z(21) }) }));
+        kids.push(new docx.Paragraph({ alignment: docx.AlignmentType.RIGHT, spacing: { after: Z(360) }, children: [new docx.TextRun({ text: right, size: Z(21) })] }));
       }
       let blocks = mdBlocks(doc.md);
       if (p.name && blocks[0] && blocks[0].t === "h1" && blocks[0].text.trim().toLowerCase() === p.name.trim().toLowerCase()) blocks = blocks.slice(1);
       blocks.forEach((b) => {
-        if (b.t === "h1") kids.push(new docx.Paragraph({ spacing: { before: 120, after: 160 }, children: runsFor(docx, b.text, { bold: true, size: 32, color: acc }) }));
-        else if (b.t === "h2") kids.push(new docx.Paragraph({ spacing: { before: 280, after: 100 }, border: tpl === "klassisk" ? { bottom: { style: docx.BorderStyle.SINGLE, size: 4, color: "DDDDDD", space: 2 } } : undefined, children: runsFor(docx, tpl !== "moderne" ? b.text.toUpperCase() : b.text, { bold: true, size: 24, color: acc }) }));
-        else if (b.t === "h3") kids.push(new docx.Paragraph({ spacing: { before: 160, after: 40 }, children: runsFor(docx, b.text, { bold: true, size: 22 }) }));
-        else if (b.t === "p") kids.push(new docx.Paragraph({ spacing: { after: 160 }, children: runsFor(docx, b.text, { size: 22 }) }));
+        if (b.t === "h1") kids.push(new docx.Paragraph({ spacing: { before: Z(120), after: Z(160) }, children: runsFor(docx, b.text, { bold: true, size: Z(32), color: acc }) }));
+        else if (b.t === "h2") kids.push(new docx.Paragraph({ spacing: { before: Z(280), after: Z(100) }, border: tpl === "klassisk" ? { bottom: { style: docx.BorderStyle.SINGLE, size: 4, color: "DDDDDD", space: 2 } } : undefined, children: runsFor(docx, tpl !== "moderne" ? b.text.toUpperCase() : b.text, { bold: true, size: Z(24), color: acc }) }));
+        else if (b.t === "h3") kids.push(new docx.Paragraph({ spacing: { before: Z(160), after: Z(40) }, children: runsFor(docx, b.text, { bold: true, size: Z(22) }) }));
+        else if (b.t === "p") kids.push(new docx.Paragraph({ spacing: { after: Z(160) }, children: runsFor(docx, b.text, { size: Z(22) }) }));
         else b.items.forEach((it, i) => kids.push(new docx.Paragraph({
-          spacing: { after: 60 },
+          spacing: { after: Z(60) },
           ...(b.t === "ul" ? { bullet: { level: 0 } } : { numbering: { reference: "num", level: 0 } }),
-          children: runsFor(docx, it, { size: 22 }),
+          children: runsFor(docx, it, { size: Z(22) }),
         })));
       });
       const file = new docx.Document({
         creator: p.name || "Ansøgeren",
         title: fileBase(doc),
-        styles: { default: { document: { run: { font, size: 22 } } } },
+        styles: { default: { document: { run: { font, size: Z(22) } } } },
         numbering: { config: [{ reference: "num", levels: [{ level: 0, format: docx.LevelFormat.DECIMAL, text: "%1.", alignment: docx.AlignmentType.START, style: { paragraph: { indent: { left: 400, hanging: 260 } } } }] }] },
-        sections: [{ properties: { page: { size: { width: 11906, height: 16838 }, margin: { top: 1300, bottom: 1200, left: 1300, right: 1300 } } }, children: kids }],
+        sections: [{ properties: { page: { size: { width: 11906, height: 16838 }, margin: { top: Z(1300), bottom: Z(1200), left: Z(1300), right: Z(1300) } } }, children: kids }],
       });
       return docx.Packer.toBlob(file);
     }
   }
 
   function minstilDocx(docx, doc) {
+    const Z = zScaler(doc);
     const isCv = doc.type === "cv";
     const font = isCv ? "Garamond" : "Calibri";
     const A = docx.AlignmentType;
@@ -667,24 +694,24 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     blocks.forEach((b, i) => {
       const prev = blocks[i - 1];
       if (b.t === "h1") {
-        kids.push(new docx.Paragraph({ alignment: A.CENTER, spacing: { after: isCv ? 240 : 0 }, children: runsFor(docx, b.text, isCv ? { bold: true, size: 34 } : { size: 34, color: "E36C0A" }) }));
+        kids.push(new docx.Paragraph({ alignment: A.CENTER, spacing: { after: isCv ? 240 : 0 }, children: runsFor(docx, b.text, isCv ? { bold: true, size: Z(34) } : { size: Z(34), color: "E36C0A" }) }));
       } else if (b.t === "h3" && prev && prev.t === "h1" && !isCv) {
-        kids.push(new docx.Paragraph({ alignment: A.CENTER, spacing: { before: 160, after: 300 }, indent: { left: 1000, right: 1000 }, children: runsFor(docx, b.text.toUpperCase(), { bold: true, italics: true, size: 17 }) }));
+        kids.push(new docx.Paragraph({ alignment: A.CENTER, spacing: { before: Z(160), after: Z(300) }, indent: { left: 1000, right: 1000 }, children: runsFor(docx, b.text.toUpperCase(), { bold: true, italics: true, size: Z(17) }) }));
       } else if (b.t === "h2") {
         kids.push(new docx.Paragraph({
           spacing: { before: isCv ? 280 : 260, after: isCv ? 120 : 20 },
           border: isCv ? { bottom: { style: docx.BorderStyle.SINGLE, size: 6, color: "111111", space: 1 } } : undefined,
-          children: runsFor(docx, b.text, isCv ? { size: 29, color: "0070C0", bold: /profil/i.test(b.text) } : { size: 23, color: "2E74B5" }),
+          children: runsFor(docx, b.text, isCv ? { size: Z(29), color: "0070C0", bold: /profil/i.test(b.text) } : { size: Z(23), color: "2E74B5" }),
         }));
       } else if (b.t === "h3") {
         const j = b.text.lastIndexOf(" | ");
-        const kidsRuns = j < 0 ? runsFor(docx, b.text, { bold: true, italics: true, size: 23 })
-          : [...runsFor(docx, b.text.slice(0, j), { bold: true, italics: true, size: 23 }), new docx.TextRun({ text: "\t" + b.text.slice(j + 3), bold: true, color: "2F5496", size: 23 })];
-        kids.push(new docx.Paragraph({ spacing: { before: 220, after: 60 }, tabStops: [{ type: docx.TabStopType.RIGHT, position: RIGHT }], keepNext: true, children: kidsRuns }));
+        const kidsRuns = j < 0 ? runsFor(docx, b.text, { bold: true, italics: true, size: Z(23) })
+          : [...runsFor(docx, b.text.slice(0, j), { bold: true, italics: true, size: Z(23) }), new docx.TextRun({ text: "\t" + b.text.slice(j + 3), bold: true, color: "2F5496", size: Z(23) })];
+        kids.push(new docx.Paragraph({ spacing: { before: Z(220), after: Z(60) }, tabStops: [{ type: docx.TabStopType.RIGHT, position: RIGHT }], keepNext: true, children: kidsRuns }));
       } else if (b.t === "p") {
         kids.push(new docx.Paragraph({ alignment: isCv ? A.LEFT : A.JUSTIFIED, spacing: { after: isCv ? 80 : 120 }, children: runsFor(docx, b.text, { size: isCv ? 23 : 22 }) }));
       } else {
-        b.items.forEach((it) => kids.push(new docx.Paragraph({ spacing: { after: 20 }, indent: { left: 640, hanging: 280 }, children: [new docx.TextRun({ text: (b.t === "ol" ? "" : "-\t"), size: isCv ? 23 : 22 }), ...runsFor(docx, it, { size: isCv ? 23 : 22 })], tabStops: [{ type: docx.TabStopType.LEFT, position: 640 }] })));
+        b.items.forEach((it) => kids.push(new docx.Paragraph({ spacing: { after: Z(20) }, indent: { left: 640, hanging: 280 }, children: [new docx.TextRun({ text: (b.t === "ol" ? "" : "-\t"), size: isCv ? 23 : 22 }), ...runsFor(docx, it, { size: isCv ? 23 : 22 })], tabStops: [{ type: docx.TabStopType.LEFT, position: 640 }] })));
       }
     });
     const small = { size: 17, font: "Calibri" };
@@ -707,7 +734,7 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     return new docx.Document({
       creator: S.profile.name || "Ansøgeren",
       title: fileBase(doc),
-      styles: { default: { document: { run: { font, size: 22 } } } },
+      styles: { default: { document: { run: { font, size: Z(22) } } } },
       sections: [section],
     });
   }
@@ -735,6 +762,14 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
 
   // ---------------------------------------------------------------- page layout
   function pageHtml(doc) {
+    const html = rawPageHtml(doc), z = fitOf(doc);
+    if (z >= 1) return html;
+    const end = html.indexOf(">");
+    let tag = html.slice(0, end).replace('class="page ', 'class="page fit ');
+    tag = tag.includes(' style="') ? tag.replace(' style="', ` style="--z:${z};`) : tag + ` style="--z:${z}"`;
+    return tag + html.slice(end);
+  }
+  function rawPageHtml(doc) {
     const p = S.profile, tpl = S.settings.template;
     if (tpl === "minstil") return minstilHtml(doc);
     const contact = [p.email, p.phone, p.city, p.web].filter(Boolean).map((x) => `<span>${esc(x)}</span>`).join("");
@@ -1357,7 +1392,7 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     openSheet(`<h2>${AI_ACTIONS[key].title}</h2><p class="err">${esc(msg)}</p>
       <div class="row"><button class="btn" data-close>Luk</button><button class="btn primary" id="again">Prøv igen</button></div>`, (b) => {
       b.querySelector("[data-close]").onclick = closeSheet;
-      $("#again", b).onclick = () => (key === "frit" ? freeAsk(doc) : runAi(doc, key));
+      $("#again", b).onclick = () => (key === "frit" ? freeAsk(doc) : runAi(doc, key, lastQuestion));
     });
   }
 
@@ -1387,7 +1422,7 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
         try { await navigator.clipboard.writeText(mdPlain(copyTarget)); toast("Kopieret"); } catch (_) { toast("Kunne ikke kopiere"); }
       };
       const use = $("#useText", b);
-      if (use) use.onclick = () => { replaceDocText(doc, ans.text, a.title.toLowerCase()); closeSheet(); toast("Teksten er opdateret ✓"); };
+      if (use) use.onclick = () => { replaceDocText(doc, ans.text, a.title.toLowerCase()); closeSheet(); toast("Teksten er opdateret ✓"); if (location.hash === "#/vis/" + doc.id) renderPreview(doc); };
       const sc = $("#saveCv", b);
       if (sc) sc.onclick = () => {
         const base = pickedCv(doc);
@@ -1411,6 +1446,7 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
         <div class="tpl-pick">${TEMPLATES.map(([k, v]) => `<button class="tb ${k === S.settings.template ? "on" : ""}" data-tpl="${k}">${v}</button>`).join("")}</div>
         <div class="swatches" ${S.settings.template === "minstil" ? "hidden" : ""}>${ACCENTS.map((c) => `<button class="swatch ${c === S.settings.accent ? "on" : ""}" data-acc="${c}" style="background:${c}" aria-label="Farve"></button>`).join("")}</div>
         ${S.settings.template !== "minstil" && !S.profile.name ? `<p class="hint">Tip: udfyld dit navn og dine kontaktoplysninger under <a href="#/indstillinger">Indstillinger</a>, så kommer de øverst på siden.</p>` : ""}
+        <div class="fit-box" id="fitBox" hidden></div>
         <div class="stage" id="stage"><div class="stage-inner" id="stageInner">${pageHtml(doc)}</div></div>
         <p class="pages-note" id="pagesNote" hidden></p>
       </div>
@@ -1418,19 +1454,69 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
         <button class="btn ai" id="pdf">${svg("download")} PDF</button>
         <button class="btn" id="docxBtn">${svg("doc")} Word (.docx)</button>
       </div>`;
+    // Height of the page as it will print, in A4 px (1123 = one page).
+    const pageH = () => {
+      const inner = $("#stageInner"), page = inner && inner.firstElementChild;
+      const s = Math.min(1, $("#stage").clientWidth / 794);
+      const mh = page.style.minHeight;
+      page.style.minHeight = "0"; // measure the content, not the empty A4 sheet
+      const h = page.getBoundingClientRect().height / s;
+      page.style.minHeight = mh;
+      return h;
+    };
+    const ONE = 1123 - 12; // small safety margin so the printed PDF really is one page
     const fit = () => {
       const stage = $("#stage"), inner = $("#stageInner"); if (!stage) return;
-      const page = inner.firstElementChild;
       const s = Math.min(1, stage.clientWidth / 794);
       inner.style.transform = `scale(${s})`;
-      stage.style.height = page.offsetHeight * s + "px";
-      const pages = page.offsetHeight / 1123;
-      const note = $("#pagesNote");
-      if (doc.type === "ansoegning" && pages > 1.02) { note.hidden = false; note.textContent = "Ansøgningen fylder mere end én A4-side. De fleste arbejdsgivere forventer højst én side. Bed evt. Claude om at forkorte den."; }
+      const h = pageH();
+      stage.style.height = h * s + "px";
+      const pages = h / 1123, z = fitOf(doc);
+      const note = $("#pagesNote"), box = $("#fitBox");
+      note.hidden = true; box.hidden = true;
+      if (doc.type === "ansoegning" && (h > ONE || z < 1)) {
+        box.hidden = false;
+        const pct = Math.round((1 - z) * 100);
+        if (h <= ONE) {
+          box.innerHTML = `<p>✓ Tilpasset til én side: skrift, afstande og margener er gjort ${pct} % mindre (brødtekst ca. ${(11 * z).toFixed(1).replace(".", ",")} pt).</p>
+            <div class="row"><button class="btn" id="fitReset">Normal størrelse</button></div>`;
+        } else {
+          const tooLong = z <= FIT_MIN + 1e-9;
+          box.innerHTML = tooLong
+            ? `<p>Den fylder stadig ca. ${pages.toFixed(2).replace(".", ",")} sider, selv med den mindste pæne skriftstørrelse. Resten skal klares ved at skære i teksten.</p>
+               <div class="row"><button class="btn ai" id="fitAi">${svg("spark")} Lad Claude forkorte den</button><button class="btn" id="fitReset">Normal størrelse</button></div>`
+            : `<p>Ansøgningen fylder ca. ${pages.toFixed(2).replace(".", ",")} sider. De fleste arbejdsgivere forventer højst én side.</p>
+               <div class="row"><button class="btn primary" id="fitGo">Få den ned på én side</button><button class="btn ai" id="fitAi">${svg("spark")} Lad Claude forkorte den</button></div>`;
+        }
+        const g = $("#fitGo"), r = $("#fitReset"), ai = $("#fitAi");
+        if (g) g.onclick = () => autoFit();
+        if (r) r.onclick = () => { doc.fit = 1; doc.updated = Date.now(); save(); renderPreview(doc); };
+        if (ai) ai.onclick = () => askShorten(pages);
+      }
       else if (doc.type === "cv" && pages > 2.05) { note.hidden = false; note.textContent = `CV'et fylder ca. ${Math.ceil(pages)} sider. 1-2 sider er normalt.`; }
-      else note.hidden = true;
     };
-    requestAnimationFrame(fit);
+    // Try smaller and smaller (1 % at a time) until the page fits, measured in the real layout.
+    const autoFit = (silent) => {
+      const page = $("#stageInner").firstElementChild, before = fitOf(doc);
+      let best = FIT_MIN, ok = false;
+      for (let z = 1; z >= FIT_MIN - 1e-9; z = Math.round((z - 0.01) * 100) / 100) {
+        setZoom(page, z);
+        if (pageH() <= ONE) { best = z; ok = true; break; }
+      }
+      if (silent && best === before) return setZoom(page, before);
+      doc.fit = best; doc.updated = Date.now(); save();
+      renderPreview(doc);
+      if (!silent) toast(ok ? "Nu fylder den én side ✓" : "Ikke helt nok. Den skal også forkortes lidt.");
+    };
+    const askShorten = (pages) => {
+      const words = mdPlain(doc.md).split(/\s+/).filter(Boolean).length;
+      const target = Math.floor(words / pages * 0.95);
+      runAi(doc, "forkort", JSON.stringify({ pages: pages.toFixed(2), words, target }));
+    };
+    // Already shrunk, but the text has changed since? Pick the largest size that fits now.
+    const settle = () => { if (location.hash !== "#/vis/" + doc.id) return; fit(); if (fitOf(doc) < 1) autoFit(true); };
+    requestAnimationFrame(settle);
+    if (document.fonts) document.fonts.ready.then(settle); // web fonts change the length
     window.onresize = fit;
     $("#back").onclick = () => go("#/doc/" + doc.id);
     app.querySelectorAll("[data-tpl]").forEach((b) => b.onclick = () => { S.settings.template = b.dataset.tpl; save(); renderPreview(doc); });

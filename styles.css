@@ -353,3 +353,14 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; justif
 .posting-text { white-space: pre-wrap; font-size: 14px; color: var(--text); padding: 0 0 12px; overflow-wrap: anywhere; }
 .section-h .hint { white-space: nowrap; }
 .section-h h2 { min-width: 0; }
+
+/* ---------- "Få den ned på én side": the whole page is drawn a bit smaller (--z) ---------- */
+.page.fit { zoom: var(--z); width: calc(794px / var(--z)); min-height: calc(1123px / var(--z)); }
+.page.tpl-minstil.fit { padding: calc(56px / var(--z)) calc(68px / var(--z)) calc(48px / var(--z)); } /* print margins don't shrink, so the preview mustn't either */
+.fit-box { background: var(--surface-2); border-radius: 14px; padding: 12px 14px; margin: 10px 0; font-size: 14px; }
+.fit-box p { margin: 0 0 10px; }
+.fit-box .row { display: flex; gap: 8px; flex-wrap: wrap; }
+@media print {
+  #printArea .page.fit { width: calc(210mm / var(--z)); min-height: 0; }
+  #printArea .page.tpl-minstil.fit { width: auto; padding: 0; }
+}
