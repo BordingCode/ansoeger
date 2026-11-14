@@ -364,3 +364,33 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; justif
   #printArea .page.fit { width: calc(210mm / var(--z)); min-height: 0; }
   #printArea .page.tpl-minstil.fit { width: auto; padding: 0; }
 }
+
+/* ---------- bilag ---------- */
+.bilag-box { background: var(--surface-2); border-radius: 14px; padding: 12px 14px; margin: 10px 0 14px; }
+.bilag-h { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; }
+.bilag-h b { display: flex; align-items: center; gap: 6px; }
+.bilag-h svg { width: 18px; height: 18px; }
+.bilag-list { list-style: none; margin: 0 0 10px; padding: 0; }
+.bilag-list li { display: flex; align-items: center; gap: 6px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.bilag-list li:last-child { border-bottom: 0; }
+.bl-n { width: 22px; height: 22px; flex: none; border-radius: 50%; background: var(--accent); color: var(--accent-text); font-size: 12px; font-weight: 700; display: grid; place-items: center; }
+.bl-name { flex: 1; min-width: 0; font-size: 14px; line-height: 1.3; }
+.bl-name small, .bp-row small { color: var(--muted); white-space: nowrap; }
+.icon-btn.sm { width: 34px; height: 34px; flex: none; font-size: 16px; }
+.icon-btn.sm:disabled { opacity: .3; }
+.bilag-pick { margin: 6px 0 12px; }
+.bp-row { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--line); }
+.bp-row label { flex: 1; display: flex; align-items: center; gap: 12px; padding: 10px 0; font-size: 15px; cursor: pointer; }
+.bp-row input { width: 22px; height: 22px; flex: none; accent-color: var(--accent); }
+.bilag-page { display: none; }
+
+@media print {
+  #printArea .page + .page, #printArea .bilag-page { break-before: page; }
+  #printArea .page + .page:not(.tpl-minstil):not(.tpl-moderne) { padding-top: 0; }
+  #printArea .bilag-page { display: block; page: bilag; }
+  #printArea .bilag-page.wide { page: bilagwide; }
+  #printArea .bilag-page img { display: block; width: 210mm; height: 296mm; object-fit: contain; }
+  #printArea .bilag-page.wide img { width: 297mm; height: 209mm; }
+  @page bilag { size: A4; margin: 0; }
+  @page bilagwide { size: A4 landscape; margin: 0; }
+}

@@ -810,8 +810,8 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     return `<div class="page tpl-minstil ms-brev"><div class="pbody">${body}</div></div>`;
   }
 
-  function printDoc(doc) {
-    preparePrint(doc);
+  function printDoc(doc, prepared) {
+    if (!prepared) preparePrint(doc);
     const old = document.title;
     document.title = safeName(fileBase(doc)); // becomes the PDF file name
     const restore = () => { document.title = old; window.removeEventListener("afterprint", restore); };
@@ -820,10 +820,11 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     setTimeout(restore, 60000);
   }
 
-  function preparePrint(doc) {
+  // extraHtml: more pages after the document (the package: CV + bilag pages)
+  function preparePrint(doc, extraHtml = "", hasCv = false) {
     const area = $("#printArea");
-    area.innerHTML = pageHtml(doc);
-    if (S.settings.template === "minstil" && doc.type === "cv") {
+    area.innerHTML = pageHtml(doc) + extraHtml;
+    if (S.settings.template === "minstil" && (doc.type === "cv" || hasCv)) {
       // Running header/footer on every printed page (Chrome's @page margin boxes).
       const css = (t) => '"' + String(t).replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\A ") + '"';
       const st = document.createElement("style");
@@ -1435,6 +1436,185 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     });
   }
 
+  // ---------------------------------------------------------------- bilag
+  // Recommendations, diploma … stored as PDFs on the user's own server (/files).
+  const LS_FILES = "ansoeger.files.v1";
+  let filesList = (() => { try { return JSON.parse(lsGet(LS_FILES) || "null"); } catch (_) { return null; } })();
+  const fileBytes = {};
+  async function loadFiles(force) {
+    if (filesList && !force) { loadFiles.bg = loadFiles.bg || refreshFiles(); return filesList; }
+    return refreshFiles();
+  }
+  async function refreshFiles() {
+    try { filesList = (await api("GET", "/files")).files; lsSet(LS_FILES, JSON.stringify(filesList)); }
+    catch (e) { if (!filesList) throw e; }
+    return filesList;
+  }
+  const fileById = (id) => (filesList || []).find((f) => f.id === id);
+  async function getFileBytes(id) {
+    if (fileBytes[id]) return fileBytes[id];
+    const key = "bilag/" + id;
+    let cache = null;
+    try { cache = await caches.open("ansoeger-bilag"); const hit = await cache.match(key); if (hit) return (fileBytes[id] = new Uint8Array(await hit.arrayBuffer())); } catch (_) {}
+    const f = await api("GET", "/files/" + id);
+    const bin = atob(f.data), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    try { if (cache) await cache.put(key, new Response(bytes, { headers: { "Content-Type": "application/pdf" } })); } catch (_) {}
+    return (fileBytes[id] = bytes);
+  }
+  // The chosen bilag, in order. A new application starts from the last choice made.
+  function docBilag(doc) {
+    const ids = Array.isArray(doc.bilag) ? doc.bilag : (S.settings.bilagLast || []);
+    return filesList ? ids.filter(fileById) : ids;
+  }
+  function setBilag(doc, ids) {
+    doc.bilag = ids; S.settings.bilagLast = ids.slice();
+    doc.updated = Date.now(); save();
+  }
+  const bilagPages = (ids) => ids.reduce((n, id) => n + ((fileById(id) || {}).pages || 0), 0);
+  const sider = (n) => n + (n === 1 ? " side" : " sider");
+
+  async function renderBilagBox(doc) {
+    const box = $("#bilagBox"); if (!box) return;
+    try { await loadFiles(); } catch (_) { box.innerHTML = `<p class="hint">Kunne ikke hente dine bilag. Har du internet?</p>`; return; }
+    if (!$("#bilagBox")) return;
+    const ids = docBilag(doc);
+    box.innerHTML = `<div class="bilag-h"><b>${svg("doc")} Bilag</b><span class="hint">${ids.length ? `${ids.length} valgt · ${sider(bilagPages(ids))}` : "Ingen valgt"}</span></div>
+      ${ids.length ? `<ol class="bilag-list">${ids.map((id, i) => `<li><span class="bl-n">${i + 1}</span><span class="bl-name">${esc(fileById(id).name)} <small>${sider(fileById(id).pages)}</small></span>
+        <button class="icon-btn sm" data-up="${i}" ${i === 0 ? "disabled" : ""} aria-label="Flyt op">↑</button>
+        <button class="icon-btn sm" data-down="${i}" ${i === ids.length - 1 ? "disabled" : ""} aria-label="Flyt ned">↓</button>
+        <button class="icon-btn sm" data-rm="${i}" aria-label="Fjern">✕</button></li>`).join("")}</ol>` : ""}
+      <button class="btn block" id="bilagPick">${ids.length ? "Vælg flere / andre bilag" : "Vælg bilag (udtalelser, eksamensbevis …)"}</button>`;
+    const move = (i, j) => { const a = ids.slice(); [a[i], a[j]] = [a[j], a[i]]; setBilag(doc, a); renderBilagBox(doc); };
+    box.querySelectorAll("[data-up]").forEach((b) => b.onclick = () => move(+b.dataset.up, +b.dataset.up - 1));
+    box.querySelectorAll("[data-down]").forEach((b) => b.onclick = () => move(+b.dataset.down, +b.dataset.down + 1));
+    box.querySelectorAll("[data-rm]").forEach((b) => b.onclick = () => { const a = ids.slice(); a.splice(+b.dataset.rm, 1); setBilag(doc, a); renderBilagBox(doc); });
+    $("#bilagPick").onclick = () => bilagPicker(doc);
+  }
+
+  function bilagPicker(doc) {
+    const draw = () => {
+      const ids = docBilag(doc);
+      openSheet(`<h2>Vælg bilag</h2>
+        <p class="hint">Sæt flueben ved det, der skal med. Rækkefølgen retter du bagefter med pilene.</p>
+        <div class="bilag-pick">${(filesList || []).map((f) => `<div class="bp-row">
+          <label><input type="checkbox" data-f="${f.id}" ${ids.includes(f.id) ? "checked" : ""}><span>${esc(f.name)} <small>${sider(f.pages)}</small></span></label>
+          <button class="icon-btn sm" data-edit="${f.id}" aria-label="Ret navn eller slet">${svg("more")}</button></div>`).join("") || `<p class="hint">Du har ingen bilag endnu.</p>`}</div>
+        <button class="btn block" id="bpAdd">${svg("upload")} Tilføj ny PDF</button>
+        <input type="file" id="bpFile" accept="application/pdf,.pdf" hidden>
+        <button class="btn primary block" data-close style="margin-top:10px">Færdig</button>`, (b) => {
+        b.querySelectorAll("[data-f]").forEach((c) => c.onchange = () => {
+          const cur = docBilag(doc).filter((x) => x !== c.dataset.f);
+          setBilag(doc, c.checked ? [...cur, c.dataset.f] : cur);
+        });
+        b.querySelectorAll("[data-edit]").forEach((e) => e.onclick = () => editFile(fileById(e.dataset.edit)));
+        $("#bpAdd", b).onclick = () => $("#bpFile", b).click();
+        $("#bpFile", b).onchange = (e) => uploadBilag(e.target.files[0]);
+      }, () => renderBilagBox(doc));
+    };
+    const editFile = (f) => openSheet(`<h2>Ret bilag</h2>
+      <label class="f"><span>Navn</span><input class="inp" id="bfName" value="${esc(f.name)}"></label>
+      <div class="row"><button class="btn primary" id="bfSave">Gem navn</button><button class="btn danger" id="bfDel">Slet bilaget</button><button class="btn" id="bfBack">Tilbage</button></div>`, (b) => {
+      $("#bfBack", b).onclick = draw;
+      $("#bfSave", b).onclick = async () => {
+        const name = $("#bfName", b).value.trim(); if (!name) return;
+        try { await api("PATCH", "/files/" + f.id, { name }); f.name = name; lsSet(LS_FILES, JSON.stringify(filesList)); draw(); }
+        catch (e) { toast("Kunne ikke gemme: " + e.message); }
+      };
+      $("#bfDel", b).onclick = () => openSheet(`<h2>Slet "${esc(f.name)}"?</h2><p>Bilaget slettes fra din server og fjernes fra alle ansøgninger. Det kan ikke fortrydes.</p>
+        <div class="row"><button class="btn" id="bfNo">Fortryd</button><button class="btn danger" id="bfYes">Slet</button></div>`, (b2) => {
+        $("#bfNo", b2).onclick = draw;
+        $("#bfYes", b2).onclick = async () => {
+          try { await api("DELETE", "/files/" + f.id); await refreshFiles(); setBilag(doc, docBilag(doc)); toast("Slettet"); draw(); }
+          catch (e) { toast("Kunne ikke slette: " + e.message); }
+        };
+      }, () => renderBilagBox(doc));
+    }, () => renderBilagBox(doc));
+    const uploadBilag = async (file) => {
+      if (!file) return;
+      toast("Lægger " + file.name + " op…");
+      try {
+        const buf = new Uint8Array(await file.arrayBuffer());
+        await loadScript("vendor/pdf-lib.min.js");
+        const pages = (await window.PDFLib.PDFDocument.load(buf, { ignoreEncryption: true })).getPageCount();
+        let bin = ""; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+        const { id } = await api("POST", "/files", { name: file.name.replace(/\.pdf$/i, ""), pages, data: btoa(bin) });
+        fileBytes[id] = buf;
+        await refreshFiles();
+        setBilag(doc, [...docBilag(doc), id]);
+        toast("Tilføjet ✓"); draw();
+      } catch (e) { toast("Kunne ikke lægge filen op: " + e.message); }
+    };
+    loadFiles().then(draw, () => toast("Kunne ikke hente dine bilag. Har du internet?"));
+  }
+
+  // "Kun bilag": the original PDFs joined into one file (made on the phone, full quality).
+  async function bilagPdf(doc) {
+    const ids = docBilag(doc);
+    await loadScript("vendor/pdf-lib.min.js");
+    const { PDFDocument } = window.PDFLib;
+    const out = await PDFDocument.create();
+    for (const id of ids) {
+      const src = await PDFDocument.load(await getFileBytes(id), { ignoreEncryption: true });
+      (await out.copyPages(src, src.getPageIndices())).forEach((p) => out.addPage(p));
+    }
+    out.setTitle("Bilag");
+    return new Blob([await out.save()], { type: "application/pdf" });
+  }
+
+  // "Samlet pakke": bilag pages drawn as images so the phone's "Gem som PDF" can put them after the application + CV.
+  async function bilagImages(ids, progress) {
+    await loadScript("vendor/pdf.min.js");
+    const lib = window.pdfjsLib;
+    lib.GlobalWorkerOptions.workerSrc = "vendor/pdf.worker.min.js";
+    const imgs = [];
+    const total = bilagPages(ids);
+    for (const id of ids) {
+      const pdf = await lib.getDocument({ data: (await getFileBytes(id)).slice() }).promise;
+      for (let n = 1; n <= pdf.numPages; n++) {
+        progress(imgs.length + 1, total);
+        const page = await pdf.getPage(n);
+        const v0 = page.getViewport({ scale: 1 });
+        const vp = page.getViewport({ scale: 1240 / Math.min(v0.width, v0.height) }); // ≈150 dpi
+        const c = document.createElement("canvas");
+        c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+        const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        imgs.push({ src: c.toDataURL("image/jpeg", 0.88), wide: vp.width > vp.height });
+        c.width = c.height = 0;
+      }
+      pdf.destroy();
+    }
+    return imgs;
+  }
+
+  function pdfMenu(doc) {
+    const ids = docBilag(doc), cv = pickedCv(doc);
+    const howTo = `<ol><li>Vælg <b>"Gem som PDF"</b> øverst (i stedet for en printer).</li><li>Tryk på den runde <b>PDF</b>-knap.</li><li>Gem filen, fx i Overførsler.</li></ol>`;
+    const printSheet = (title, go) => openSheet(`<h2>${title}</h2><p>Telefonens udskriftsvindue åbner nu. Sådan gør du:</p>${howTo}
+      <button class="btn primary block" id="goPrint">Åbn udskriftsvindue</button>`, (b) => { $("#goPrint", b).onclick = () => { closeSheet(); go(); }; });
+    if (doc.type !== "ansoegning" || !ids.length) return printSheet("Gem som PDF", () => printDoc(doc));
+    openSheet(`<h2>Gem som PDF</h2>
+      <button class="ai-opt" id="pOnly"><span class="ai-ico">${svg("letter")}</span><span><b>Kun ansøgningen</b><small>Som før.</small></span></button>
+      <button class="ai-opt" id="pAll"><span class="ai-ico">${svg("doc")}</span><span><b>Samlet pakke</b><small>Ansøgning${cv ? " + CV" : ""} + ${ids.length} bilag (${sider(bilagPages(ids))}) i én PDF.${cv ? "" : " Du har intet CV i appen endnu."}</small></span></button>
+      <button class="ai-opt" id="pBilag"><span class="ai-ico">${svg("download")}</span><span><b>Kun bilag</b><small>De ${ids.length} bilag i din rækkefølge, i original kvalitet (${sider(bilagPages(ids))}).</small></span></button>`, (b) => {
+      $("#pOnly", b).onclick = () => printSheet("Kun ansøgningen", () => printDoc(doc));
+      $("#pBilag", b).onclick = async () => {
+        openSheet(`<h2>Kun bilag</h2><div class="thinking"><div class="spinner"></div><div>Samler ${ids.length} bilag…</div></div>`);
+        try { const blob = await bilagPdf(doc); closeSheet(); deliver(blob, safeName("Bilag - " + fileBase(doc).replace(/^Ansøgning\s*-?\s*/i, "")) + ".pdf"); }
+        catch (e) { console.error(e); openSheet(`<h2>Kun bilag</h2><p class="err">Kunne ikke samle bilagene: ${esc(e.message)}</p><button class="btn block" data-close>Luk</button>`, (b2) => b2.querySelector("[data-close]").onclick = closeSheet); }
+      };
+      $("#pAll", b).onclick = async () => {
+        openSheet(`<h2>Samlet pakke</h2><div class="thinking"><div class="spinner"></div><div id="pkgWait">Gør bilagene klar…</div></div>`);
+        try {
+          const imgs = await bilagImages(ids, (i, n) => { const w = $("#pkgWait"); if (w) w.textContent = `Gør bilagene klar… side ${i} af ${n}`; });
+          const extra = (cv ? pageHtml(cv) : "") + imgs.map((im) => `<div class="bilag-page${im.wide ? " wide" : ""}"><img src="${im.src}" alt=""></div>`).join("");
+          printSheet("Samlet pakke", () => { preparePrint(doc, extra, !!cv); printDoc(doc, true); });
+        } catch (e) { console.error(e); openSheet(`<h2>Samlet pakke</h2><p class="err">Kunne ikke gøre bilagene klar: ${esc(e.message)}</p><button class="btn block" data-close>Luk</button>`, (b2) => b2.querySelector("[data-close]").onclick = closeSheet); }
+      };
+    });
+  }
+
   // ---------------------------------------------------------------- preview
   function renderPreview(doc) {
     app.innerHTML = `
@@ -1447,6 +1627,7 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
         <div class="swatches" ${S.settings.template === "minstil" ? "hidden" : ""}>${ACCENTS.map((c) => `<button class="swatch ${c === S.settings.accent ? "on" : ""}" data-acc="${c}" style="background:${c}" aria-label="Farve"></button>`).join("")}</div>
         ${S.settings.template !== "minstil" && !S.profile.name ? `<p class="hint">Tip: udfyld dit navn og dine kontaktoplysninger under <a href="#/indstillinger">Indstillinger</a>, så kommer de øverst på siden.</p>` : ""}
         <div class="fit-box" id="fitBox" hidden></div>
+        ${doc.type === "ansoegning" ? `<div class="bilag-box" id="bilagBox"><p class="hint">Henter bilag…</p></div>` : ""}
         <div class="stage" id="stage"><div class="stage-inner" id="stageInner">${pageHtml(doc)}</div></div>
         <p class="pages-note" id="pagesNote" hidden></p>
       </div>
@@ -1521,14 +1702,8 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     $("#back").onclick = () => go("#/doc/" + doc.id);
     app.querySelectorAll("[data-tpl]").forEach((b) => b.onclick = () => { S.settings.template = b.dataset.tpl; save(); renderPreview(doc); });
     app.querySelectorAll("[data-acc]").forEach((b) => b.onclick = () => { S.settings.accent = b.dataset.acc; save(); renderPreview(doc); });
-    $("#pdf").onclick = () => {
-      openSheet(`<h2>Gem som PDF</h2>
-        <p>Telefonens udskriftsvindue åbner nu. Sådan gør du:</p>
-        <ol><li>Vælg <b>"Gem som PDF"</b> øverst (i stedet for en printer).</li><li>Tryk på den runde <b>PDF</b>-knap.</li><li>Gem filen, fx i Overførsler.</li></ol>
-        <button class="btn primary block" id="goPrint">Åbn udskriftsvindue</button>`, (b) => {
-        $("#goPrint", b).onclick = () => { closeSheet(); printDoc(doc); };
-      });
-    };
+    $("#pdf").onclick = () => pdfMenu(doc);
+    if (doc.type === "ansoegning") renderBilagBox(doc);
     $("#docxBtn").onclick = () => exportDocx(doc);
   }
 
@@ -1617,5 +1792,5 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 
   // Small debug hook for testing (no secrets in it).
-  window.__ans = { get state() { return S; }, htmlToMd, mdToHtml, mdBlocks, parseAnswer, importDocx, makeDocx, pageHtml, preparePrint, runAi };
+  window.__ans = { get state() { return S; }, bilagPdf, docBilag, loadFiles, htmlToMd, mdToHtml, mdBlocks, parseAnswer, importDocx, makeDocx, pageHtml, preparePrint, runAi };
 })();
