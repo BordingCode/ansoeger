@@ -86,7 +86,8 @@ h1, h2, h3 { line-height: 1.25; }
 .doc-card:active { transform: scale(.99); }
 .doc-ico { width: 40px; height: 40px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; flex: none; }
 .doc-ico svg { width: 22px; height: 22px; }
-.doc-main { flex: 1; min-width: 0; }
+.doc-main { flex: 1; min-width: 0; overflow: hidden; }
+.doc-main > span { display: block; }
 .doc-title { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .doc-sub { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chip { font-size: 12px; padding: 3px 9px; border-radius: 99px; background: var(--surface-2); color: var(--text); white-space: nowrap; flex: none; }
@@ -338,3 +339,17 @@ textarea.inp { min-height: 120px; resize: vertical; line-height: 1.45; }
   #printArea .page.tpl-minstil { padding: 0; width: auto; display: block; }
   #printArea .ms-top, #printArea .ms-foot { display: none; }
 }
+
+/* ---------- tabs + jobs ---------- */
+.tabs { display: flex; gap: 6px; padding: 8px 16px 0; max-width: 720px; margin: 0 auto; }
+.tabs a { flex: 1; text-align: center; padding: 8px 10px; white-space: nowrap; font-size: 15px; border-radius: 12px; text-decoration: none; color: var(--muted); font-weight: 600; background: var(--surface-2); }
+.tabs a.on { background: var(--accent); color: var(--accent-text); }
+.filters { display: flex; gap: 8px; padding: 10px 0 0; overflow-x: auto; }
+.filters .tb { height: 36px; padding: 0 14px; white-space: nowrap; }
+a.btn { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.job-head { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin-top: 12px; }
+.job-head h2 { font-size: 19px; margin: 2px 0 4px; }
+.draft .result { margin: 0 0 6px; }
+.posting-text { white-space: pre-wrap; font-size: 14px; color: var(--text); padding: 0 0 12px; overflow-wrap: anywhere; }
+.section-h .hint { white-space: nowrap; }
+.section-h h2 { min-width: 0; }

@@ -70,6 +70,7 @@
     profile: { name: "", title: "", email: "", phone: "", city: "", web: "", photo: "" },
     settings: { template: "minstil", accent: ACCENTS[0] },
     docs: [],
+    applied: {},  // job-posting id -> { on, t }: "Markér som søgt"
     deleted: [],  // ids of deleted documents, so a merge never brings them back
     changed: 0,   // last local change (ms)
     synced: 0,    // last successful cloud backup (ms)
@@ -286,10 +287,15 @@
       if (v && (newer || !S.profile[k]) && S.profile[k] !== v) { S.profile[k] = v; changed = true; }
     }
     if (newer && remote.settings) S.settings = { ...S.settings, ...remote.settings };
+    for (const [k, v] of Object.entries(remote.applied || {})) {
+      S.applied = S.applied || {};
+      const l = S.applied[k];
+      if (v && (!l || (v.t || 0) > (l.t || 0))) { S.applied[k] = v; changed = true; }
+    }
     S.changed = Math.max(S.changed || 0, remote.changed || 0);
     return changed;
   }
-  const onHome = () => !/^#\/(doc|vis)\//.test(location.hash);
+  const onHome = () => !/^#\/(doc|vis|job\/p)\//.test(location.hash);
 
   // Cloud backup: push the whole state a few seconds after the last change.
   let backingUp = false;
@@ -835,6 +841,9 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     if ((m = h.match(/^#\/doc\/([\w-]+)$/)) && docById(m[1])) return renderDoc(docById(m[1]));
     if ((m = h.match(/^#\/vis\/([\w-]+)$/)) && docById(m[1])) return renderPreview(docById(m[1]));
     if (h === "#/indstillinger") return renderSettings();
+    if (h === "#/job") return renderJobs();
+    if ((m = h.match(/^#\/job\/w\/(.+)$/))) return renderWorkplace(decodeURIComponent(m[1]));
+    if ((m = h.match(/^#\/job\/p\/(.+)$/))) return renderPosting(decodeURIComponent(m[1]));
     return renderHome();
   }
 
@@ -892,6 +901,7 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     app.innerHTML = `
       <div class="bar"><h1>Ansøgeren</h1><button class="pi-dot" id="piDot"></button>
         <button class="icon-btn" id="gear" aria-label="Indstillinger">${svg("gear")}</button></div>
+      ${tabsHtml("docs")}
       <div class="wrap">
         ${!S.profile.name ? `<div class="empty" style="margin-top:12px;text-align:left"><strong>Start her:</strong> skriv dit navn og dine kontaktoplysninger under <a href="#/indstillinger">Indstillinger</a>. Så sætter appen dem pænt øverst på CV og ansøgninger.</div>` : ""}
         <div class="section-h"><h2>CV</h2></div>
@@ -933,6 +943,204 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
   }
   $("#fileInput").addEventListener("change", (e) => { const f = e.target.files[0]; if (f) importDocx(f); });
 
+  // ---------------------------------------------------------------- jobs (from the Jobscanner)
+  // The Pi sends every job the Jobscanner has mailed (+ its application drafts)
+  // to the API. One entry per workplace; Aarhus Universitet is split into units.
+  const LS_POSTINGS = "ansoeger.postings.v1";
+  let postings = (() => { try { return JSON.parse(lsGet(LS_POSTINGS) || "null"); } catch (_) { return null; } })();
+  let postingsLoading = null;
+  const postingDetail = {};
+  const jobUi = { q: "", filter: "alle" };
+
+  function loadPostings(force) {
+    if (postingsLoading && !force) return postingsLoading;
+    postingsLoading = api("GET", "/postings").then((r) => {
+      postings = r;
+      lsSet(LS_POSTINGS, JSON.stringify(r));
+      return r;
+    }).finally(() => { postingsLoading = null; });
+    return postingsLoading;
+  }
+  async function getPosting(id) {
+    if (!postingDetail[id]) postingDetail[id] = await api("GET", "/postings/" + encodeURIComponent(id));
+    return postingDetail[id];
+  }
+
+  const isApplied = (id) => !!(S.applied && S.applied[id] && S.applied[id].on);
+  function setApplied(id, on) {
+    S.applied = S.applied || {};
+    S.applied[id] = { on, t: Date.now() };
+    save();
+  }
+  const norm = (s) => String(s || "").toLowerCase().replace(/a\/s|k\/s|s\/i/g, "").replace(/[^a-z0-9æøå]/g, "");
+  const RATING = { god: "God match", ok: "OK", maske: "Måske" };
+  const fmtDay = (iso) => { const d = iso && new Date(iso + "T12:00"); return d && !isNaN(d) ? d.toLocaleDateString("da-DK", { day: "numeric", month: "short", year: "numeric" }) : ""; };
+  const wpName = (p) => p.workplace + (p.unit ? " · " + p.unit : "");
+
+  // Ansøgeren documents that belong to a workplace: linked to one of its jobs,
+  // or with that workplace typed in the "Firma" field.
+  function docsForWorkplace(wp, ids) {
+    const n = norm(wp);
+    return S.docs.filter((d) => d.type === "ansoegning" && (ids.has(d.postingId) ||
+      (n.length > 3 && norm(d.company) && (norm(d.company).includes(n) || n.includes(norm(d.company)) && norm(d.company).length > 5))))
+      .sort((a, b) => b.updated - a.updated);
+  }
+  const docsForPosting = (id) => S.docs.filter((d) => d.postingId === id).sort((a, b) => b.updated - a.updated);
+
+  function groupWorkplaces(list) {
+    const by = new Map();
+    for (const p of list) {
+      if (!by.has(p.workplace)) by.set(p.workplace, { name: p.workplace, posts: [], latest: "" });
+      const w = by.get(p.workplace);
+      w.posts.push(p);
+      if ((p.date || "") > w.latest) w.latest = p.date || "";
+    }
+    for (const w of by.values()) {
+      const ids = new Set(w.posts.map((p) => p.id));
+      w.ownDocs = docsForWorkplace(w.name, ids);
+      w.drafts = w.posts.filter((p) => p.drafts && p.drafts.length).length + w.ownDocs.length;
+      w.applied = w.posts.filter((p) => isApplied(p.id)).length;
+    }
+    return [...by.values()].sort((a, b) => b.latest.localeCompare(a.latest) || a.name.localeCompare(b.name, "da"));
+  }
+
+  const tabsHtml = (on) => `<nav class="tabs"><a href="#/" class="${on === "docs" ? "on" : ""}">Dokumenter</a><a href="#/job" class="${on === "job" ? "on" : ""}">Job</a></nav>`;
+
+  function jobsLoadingOr(fn) {
+    if (postings) return fn();
+    app.querySelector(".wrap").innerHTML = `<div class="thinking"><div class="spinner"></div><p>Henter job…</p></div>`;
+    loadPostings().then(() => render()).catch((e) => {
+      const w = app.querySelector(".wrap");
+      if (w) w.innerHTML = `<div class="err">Kunne ikke hente jobbene: ${esc(e.message)}. Har du internet?</div>`;
+    });
+  }
+
+  function renderJobs() {
+    app.innerHTML = `
+      <div class="bar"><h1>Ansøgeren</h1><button class="pi-dot" id="piDot"></button>
+        <button class="icon-btn" id="gear" aria-label="Indstillinger">${svg("gear")}</button></div>
+      ${tabsHtml("job")}
+      <div class="wrap"></div>`;
+    $("#gear").onclick = () => go("#/indstillinger");
+    paintPiDot($("#piDot"));
+    jobsLoadingOr(() => {
+      const ws = groupWorkplaces(postings.postings);
+      const q = norm(jobUi.q);
+      const shown = ws.filter((w) => (!q || norm(w.name).includes(q) || w.posts.some((p) => norm(p.title).includes(q) || norm(p.unit).includes(q)))
+        && (jobUi.filter === "alle" || (jobUi.filter === "ansoegning" && w.drafts) || (jobUi.filter === "soegt" && w.applied)));
+      const total = postings.postings.length;
+      $(".wrap").innerHTML = `
+        <input class="inp" id="jq" type="search" placeholder="Søg arbejdsplads eller stilling" value="${esc(jobUi.q)}" style="margin-top:12px">
+        <div class="filters">${[["alle", "Alle"], ["ansoegning", "Med ansøgning"], ["soegt", "Søgt"]].map(([k, v]) => `<button class="tb ${jobUi.filter === k ? "on" : ""}" data-f="${k}">${v}</button>`).join("")}</div>
+        <div class="section-h"><h2>Arbejdspladser</h2><span class="hint">${ws.length} steder · ${total} opslag</span></div>
+        <div id="wlist">${shown.length ? shown.map((w) => `<button class="doc-card" data-w="${esc(w.name)}">
+            <span class="doc-ico">${svg("letter")}</span>
+            <span class="doc-main"><span class="doc-title">${esc(w.name)}</span>
+            <span class="doc-sub">${w.posts.length} opslag${w.drafts ? ` · ${w.drafts} ansøgning${w.drafts > 1 ? "er" : ""}` : ""} · senest ${fmtDay(w.latest)}</span></span>
+            ${w.applied ? `<span class="chip sendt">Søgt</span>` : ""}
+          </button>`).join("") : `<div class="empty">Ingen arbejdspladser passer.</div>`}</div>
+        <p class="hint" style="text-align:center;margin-top:18px">Jobscanneren opdaterer listen hver dag kl. 18.${postings.synced ? ` Sidst opdateret ${fmtShort(postings.synced)}.` : ""}</p>`;
+      const jq = $("#jq");
+      jq.oninput = debounce(() => { jobUi.q = jq.value; renderJobs(); const n = $("#jq"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250);
+      app.querySelectorAll("[data-f]").forEach((b) => b.onclick = () => { jobUi.filter = b.dataset.f; renderJobs(); });
+      app.querySelectorAll("[data-w]").forEach((b) => b.onclick = () => go("#/job/w/" + encodeURIComponent(b.dataset.w)));
+    });
+    loadPostings().then((r) => { if (location.hash === "#/job" && r && document.activeElement?.id !== "jq") { /* fresh data */ } }).catch(() => {});
+  }
+
+  function postingRow(p) {
+    const n = (p.drafts || []).length + docsForPosting(p.id).length;
+    return `<button class="doc-card" data-p="${esc(p.id)}">
+      <span class="doc-main"><span class="doc-title">${esc(p.title)}</span>
+      <span class="doc-sub">${[fmtDay(p.date), p.number ? "nr. " + p.number : "", p.deadline ? "frist " + esc(p.deadline) : "", n ? `${n} ansøgning${n > 1 ? "er" : ""}` : "ingen ansøgning"].filter(Boolean).join(" · ")}</span></span>
+      ${isApplied(p.id) ? `<span class="chip sendt">Søgt</span>` : p.rating && RATING[p.rating] ? `<span class="chip">${RATING[p.rating]}</span>` : ""}
+    </button>`;
+  }
+
+  function renderWorkplace(name) {
+    app.innerHTML = `
+      <div class="bar"><button class="icon-btn" id="back" aria-label="Tilbage">${svg("back")}</button><h1>${esc(name)}</h1></div>
+      <div class="wrap"></div>`;
+    $("#back").onclick = () => go("#/job");
+    jobsLoadingOr(() => {
+      const w = groupWorkplaces(postings.postings).find((x) => x.name === name);
+      if (!w) { $(".wrap").innerHTML = `<div class="empty">Arbejdspladsen findes ikke længere.</div>`; return; }
+      const byUnit = new Map();
+      for (const p of w.posts.sort((a, b) => (b.date || "").localeCompare(a.date || ""))) {
+        const u = p.unit || "";
+        if (!byUnit.has(u)) byUnit.set(u, []);
+        byUnit.get(u).push(p);
+      }
+      const units = [...byUnit.keys()].sort((a, b) => (a === "Ukendt enhed") - (b === "Ukendt enhed") || a.localeCompare(b, "da"));
+      const ownLoose = w.ownDocs.filter((d) => !d.postingId || !w.posts.some((p) => p.id === d.postingId));
+      $(".wrap").innerHTML = `
+        ${w.applied ? `<div class="notes" style="margin-top:12px">Du har søgt ${w.applied} ${w.applied > 1 ? "stillinger" : "stilling"} her før.</div>` : ""}
+        ${units.map((u) => `${u ? `<div class="section-h"><h2>${esc(u)}</h2><span class="hint">${byUnit.get(u).length} opslag</span></div>` : `<div class="section-h"><h2>Opslag</h2><span class="hint">${w.posts.length}</span></div>`}
+          ${byUnit.get(u).map(postingRow).join("")}`).join("")}
+        ${ownLoose.length ? `<div class="section-h"><h2>Dine ansøgninger hertil</h2></div>${ownLoose.map(card).join("")}` : ""}`;
+      app.querySelectorAll("[data-p]").forEach((b) => b.onclick = () => go("#/job/p/" + encodeURIComponent(b.dataset.p)));
+      app.querySelectorAll("[data-open]").forEach((b) => b.onclick = () => go("#/doc/" + b.dataset.open));
+    });
+  }
+
+  const isoDeadline = (s) => { const m = String(s || "").match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/); return m ? `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}` : (/^\d{4}-\d{2}-\d{2}$/.test(s) ? s : ""); };
+  function docFromPosting(p, md, label) {
+    return newDoc("ansoegning", {
+      title: label || p.title, company: wpName(p), position: p.title, deadline: isoDeadline(p.deadline),
+      jobAd: [p.title, wpName(p), p.url, "", p.postingText || ""].join("\n").trim(), md: md || "",
+      postingId: p.id, status: isApplied(p.id) ? "sendt" : "kladde",
+    });
+  }
+
+  function renderPosting(id) {
+    const sum = postings && postings.postings.find((p) => p.id === id);
+    app.innerHTML = `
+      <div class="bar"><button class="icon-btn" id="back" aria-label="Tilbage">${svg("back")}</button><h1>${esc(sum ? sum.title : "Opslag")}</h1></div>
+      <div class="wrap" style="padding-bottom:120px"><div class="thinking"><div class="spinner"></div><p>Henter opslaget…</p></div></div>`;
+    $("#back").onclick = () => go(sum ? "#/job/w/" + encodeURIComponent(sum.workplace) : "#/job");
+    getPosting(id).then((p) => {
+      if (!location.hash.startsWith("#/job/p/")) return;
+      const own = docsForPosting(p.id);
+      const drafts = (p.drafts || []).slice().sort((a, b) => b.version - a.version);
+      const siblings = postings ? postings.postings.filter((x) => x.workplace === p.workplace && x.id !== p.id && ((x.drafts || []).length || isApplied(x.id))) : [];
+      $(".wrap").innerHTML = `
+        <div class="job-head">
+          <div class="hint">${esc(wpName(p))}</div>
+          <h2>${esc(p.title)}</h2>
+          <div class="hint">${[fmtDay(p.date) && "Fundet " + fmtDay(p.date), p.number && "nr. " + p.number, p.deadline && "Frist " + esc(p.deadline), p.address && esc(p.address)].filter(Boolean).join(" · ")}</div>
+          ${p.reason ? `<p class="notes" style="margin:10px 0 0">${p.rating && RATING[p.rating] ? `<b>${RATING[p.rating]}:</b> ` : ""}${esc(p.reason)}</p>` : ""}
+          <div class="row" style="margin-top:12px">
+            ${p.url ? `<a class="btn" href="${esc(p.url)}" target="_blank" rel="noopener">${svg("eye")} Se opslaget</a>` : ""}
+            <button class="btn ${isApplied(p.id) ? "primary" : ""}" id="applied">${isApplied(p.id) ? "✓ Søgt" : "Markér som søgt"}</button>
+          </div>
+        </div>
+        <div class="section-h"><h2>Ansøgninger</h2></div>
+        ${own.map(card).join("")}
+        ${drafts.map((d, i) => `<details class="meta draft" ${!own.length && i === 0 ? "open" : ""}>
+            <summary>${d.version === 999 ? "Nyeste udkast" : "Tidligere version " + d.version} <span class="sum-info">${esc(d.name)}</span></summary>
+            <div class="result">${mdToHtml(d.text)}</div>
+            <button class="btn block" data-draft="${i}" style="margin:6px 0 12px">${svg("pen")} Åbn i Ansøgeren og ret</button>
+          </details>`).join("")}
+        ${!own.length && !drafts.length ? `<div class="empty">Der er ikke skrevet en ansøgning til dette job endnu.</div>` : ""}
+        <button class="btn block" id="newFor" style="margin-top:10px">${svg("plus")} Ny ansøgning til dette job</button>
+        ${siblings.length ? `<div class="section-h"><h2>Tidligere hos ${esc(p.workplace)}</h2></div>${siblings.map(postingRow).join("")}` : ""}
+        ${p.postingText ? `<details class="meta" style="margin-top:16px"><summary>Opslagets tekst</summary><div class="posting-text">${esc(p.postingText)}</div></details>` : ""}`;
+      $("#applied").onclick = () => { setApplied(p.id, !isApplied(p.id)); toast(isApplied(p.id) ? "Markeret som søgt" : "Ikke længere markeret som søgt"); renderPosting(id); };
+      app.querySelectorAll("[data-open]").forEach((b) => b.onclick = () => go("#/doc/" + b.dataset.open));
+      app.querySelectorAll("[data-p]").forEach((b) => b.onclick = () => go("#/job/p/" + encodeURIComponent(b.dataset.p)));
+      app.querySelectorAll("[data-draft]").forEach((b) => b.onclick = () => {
+        const d = drafts[+b.dataset.draft];
+        const doc = docFromPosting(p, d.text, p.title);
+        go("#/doc/" + doc.id);
+        toast("Udkastet er hentet ind. Jobopslaget ligger under Job øverst.");
+      });
+      $("#newFor").onclick = () => { const doc = docFromPosting(p, ""); go("#/doc/" + doc.id); toast("Tryk Claude → Skriv udkast for at få et første bud."); };
+    }).catch((e) => {
+      const w = app.querySelector(".wrap");
+      if (w) w.innerHTML = `<div class="err">Kunne ikke hente opslaget: ${esc(e.message)}</div>`;
+    });
+  }
+
   // ---------------------------------------------------------------- editor
   let editorEl = null, editorDoc = null;
   const saveEditor = debounce(() => flushEditor(), 600);
@@ -971,6 +1179,7 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
             <label class="f"><span>Ansøgningsfrist</span><input class="inp" type="date" data-k="deadline" value="${esc(doc.deadline)}"></label>
           </div>
           ${cvs.length > 1 ? `<label class="f"><span>Hvilket CV skal Claude bruge?</span><select class="inp" data-k="cvId">${cvs.map((c) => `<option value="${c.id}" ${pickedCv(doc) && pickedCv(doc).id === c.id ? "selected" : ""}>${esc(c.title)}</option>`).join("")}</select></label>` : ""}
+          ${doc.postingId ? `<p class="hint" style="margin:0 0 8px"><a href="#/job/p/${encodeURIComponent(doc.postingId)}">Se jobbet og dine andre ansøgninger hertil →</a></p>` : ""}
           <label class="f"><span>Jobopslag (indsæt hele teksten)</span><textarea class="inp" data-k="jobAd" placeholder="Kopiér jobopslaget fra hjemmesiden og sæt det ind her.">${esc(doc.jobAd)}</textarea></label>
         </details>` : ""}
         <div class="toolbar" id="tb">
