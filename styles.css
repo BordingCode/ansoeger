@@ -394,3 +394,8 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; justif
   @page bilag { size: A4; margin: 0; }
   @page bilagwide { size: A4 landscape; margin: 0; }
 }
+.sortbar { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding-top: 10px; }
+.sortbar .seg { display: flex; gap: 6px; }
+.sortbar .seg .tb { height: 36px; padding: 0 12px; white-space: nowrap; }
+.sortpick { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted, inherit); }
+.sortpick select.inp { width: auto; height: 36px; padding: 0 10px; margin: 0; }

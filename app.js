@@ -986,7 +986,10 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
   let postings = (() => { try { return JSON.parse(lsGet(LS_POSTINGS) || "null"); } catch (_) { return null; } })();
   let postingsLoading = null;
   const postingDetail = {};
-  const jobUi = { q: "", filter: "alle" };
+  const jobUi = Object.assign({ q: "", filter: "alle", view: "steder", sort: "nyeste" },
+    (() => { try { const v = JSON.parse(lsGet("ansoeger.jobui.v1") || "{}"); return { view: v.view, sort: v.sort }; } catch (_) { return {}; } })());
+  jobUi.view = jobUi.view || "steder"; jobUi.sort = jobUi.sort || "nyeste";
+  const saveJobUi = () => { try { localStorage.setItem("ansoeger.jobui.v1", JSON.stringify({ view: jobUi.view, sort: jobUi.sort })); } catch (_) {} };
 
   function loadPostings(force) {
     if (postingsLoading && !force) return postingsLoading;
@@ -1012,6 +1015,27 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
   const RATING = { god: "God match", ok: "OK", maske: "Måske" };
   const fmtDay = (iso) => { const d = iso && new Date(iso + "T12:00"); return d && !isNaN(d) ? d.toLocaleDateString("da-DK", { day: "numeric", month: "short", year: "numeric" }) : ""; };
   const wpName = (p) => p.workplace + (p.unit ? " · " + p.unit : "");
+
+  // ---- Sorting the job list ----
+  const SORTS = [["nyeste", "Nyeste først"], ["frist", "Frist snarest"], ["match", "Bedste match"], ["afstand", "Nærmest"], ["navn", "A–Å"]];
+  const todayIso = () => new Date().toISOString().slice(0, 10);
+  // Upcoming deadlines first (soonest on top), then no deadline, then expired
+  const deadlineKey = (p) => { const d = isoDeadline(p.deadline); if (!d) return "2"; return d >= todayIso() ? "0" + d : "3" + d; };
+  // Gymnasium jobs are what the scanner looks for, so they count as a good match
+  const matchKey = (p) => ({ god: 0, ok: 1, maske: 2 })[p.rating] ?? ((p.kind || "gymnasium") === "gymnasium" ? 0 : 3);
+  const distKey = (p) => (typeof p.distance === "number" ? p.distance : 1e9);
+  const byNewest = (a, b) => (b.date || "").localeCompare(a.date || "");
+  const postCmp = {
+    nyeste: byNewest,
+    frist: (a, b) => deadlineKey(a).localeCompare(deadlineKey(b)) || byNewest(a, b),
+    match: (a, b) => matchKey(a) - matchKey(b) || byNewest(a, b),
+    afstand: (a, b) => distKey(a) - distKey(b) || byNewest(a, b),
+    navn: (a, b) => a.title.localeCompare(b.title, "da"),
+  };
+  // A workplace sorts by its "best" posting for the chosen order
+  const bestPost = (w, sort) => (sort === "navn" ? w.posts[0] : [...w.posts].sort(postCmp[sort])[0]);
+  const sortWorkplaces = (ws, sort) => sort === "navn" ? [...ws].sort((a, b) => a.name.localeCompare(b.name, "da"))
+    : [...ws].sort((a, b) => postCmp[sort](bestPost(a, sort), bestPost(b, sort)) || a.name.localeCompare(b.name, "da"));
 
   // Ansøgeren documents that belong to a workplace: linked to one of its jobs,
   // or with that workplace typed in the "Firma" field.
@@ -1062,32 +1086,46 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     jobsLoadingOr(() => {
       const ws = groupWorkplaces(postings.postings);
       const q = norm(jobUi.q);
-      const shown = ws.filter((w) => (!q || norm(w.name).includes(q) || w.posts.some((p) => norm(p.title).includes(q) || norm(p.unit).includes(q)))
-        && (jobUi.filter === "alle" || (jobUi.filter === "ansoegning" && w.drafts) || (jobUi.filter === "soegt" && w.applied)));
+      const shown = sortWorkplaces(ws.filter((w) => (!q || norm(w.name).includes(q) || w.posts.some((p) => norm(p.title).includes(q) || norm(p.unit).includes(q)))
+        && (jobUi.filter === "alle" || (jobUi.filter === "ansoegning" && w.drafts) || (jobUi.filter === "soegt" && w.applied))), jobUi.sort);
       const total = postings.postings.length;
+      const hasDraft = (p) => (p.drafts || []).length || docsForPosting(p.id).length;
+      const shownPosts = postings.postings.filter((p) => (!q || norm(p.workplace).includes(q) || norm(p.title).includes(q) || norm(p.unit).includes(q))
+        && (jobUi.filter === "alle" || (jobUi.filter === "ansoegning" && hasDraft(p)) || (jobUi.filter === "soegt" && isApplied(p.id)))).sort(postCmp[jobUi.sort]);
+      const flat = jobUi.view === "opslag";
       $(".wrap").innerHTML = `
         <input class="inp" id="jq" type="search" placeholder="Søg arbejdsplads eller stilling" value="${esc(jobUi.q)}" style="margin-top:12px">
         <div class="filters">${[["alle", "Alle"], ["ansoegning", "Med ansøgning"], ["soegt", "Søgt"]].map(([k, v]) => `<button class="tb ${jobUi.filter === k ? "on" : ""}" data-f="${k}">${v}</button>`).join("")}</div>
-        <div class="section-h"><h2>Arbejdspladser</h2><span class="hint">${ws.length} steder · ${total} opslag</span></div>
+        <div class="sortbar">
+          <div class="seg">${[["steder", "Arbejdspladser"], ["opslag", "Opslag"]].map(([k, v]) => `<button class="tb ${jobUi.view === k ? "on" : ""}" data-v="${k}">${v}</button>`).join("")}</div>
+          <label class="sortpick"><span>Sortér</span><select class="inp" id="jsort">${SORTS.map(([k, v]) => `<option value="${k}" ${jobUi.sort === k ? "selected" : ""}>${v}</option>`).join("")}</select></label>
+        </div>
+        ${flat ? `<div class="section-h"><h2>Opslag</h2><span class="hint">${shownPosts.length} af ${total} opslag</span></div>
+        <div id="plist">${shownPosts.length ? shownPosts.map((p) => postingRow(p, true)).join("") : `<div class="empty">Ingen opslag passer.</div>`}</div>`
+        : `<div class="section-h"><h2>Arbejdspladser</h2><span class="hint">${ws.length} steder · ${total} opslag</span></div>
         <div id="wlist">${shown.length ? shown.map((w) => `<button class="doc-card" data-w="${esc(w.name)}">
             <span class="doc-ico">${svg("letter")}</span>
             <span class="doc-main"><span class="doc-title">${esc(w.name)}</span>
             <span class="doc-sub">${w.posts.length} opslag${w.drafts ? ` · ${w.drafts} ansøgning${w.drafts > 1 ? "er" : ""}` : ""} · senest ${fmtDay(w.latest)}</span></span>
             ${w.applied ? `<span class="chip sendt">Søgt</span>` : ""}
-          </button>`).join("") : `<div class="empty">Ingen arbejdspladser passer.</div>`}</div>
+          </button>`).join("") : `<div class="empty">Ingen arbejdspladser passer.</div>`}</div>`}
         <p class="hint" style="text-align:center;margin-top:18px">Jobscanneren opdaterer listen hver dag kl. 18.${postings.synced ? ` Sidst opdateret ${fmtShort(postings.synced)}.` : ""}</p>`;
       const jq = $("#jq");
       jq.oninput = debounce(() => { jobUi.q = jq.value; renderJobs(); const n = $("#jq"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250);
       app.querySelectorAll("[data-f]").forEach((b) => b.onclick = () => { jobUi.filter = b.dataset.f; renderJobs(); });
       app.querySelectorAll("[data-w]").forEach((b) => b.onclick = () => go("#/job/w/" + encodeURIComponent(b.dataset.w)));
+      app.querySelectorAll("[data-v]").forEach((b) => b.onclick = () => { jobUi.view = b.dataset.v; saveJobUi(); renderJobs(); });
+      $("#jsort").onchange = (e) => { jobUi.sort = e.target.value; saveJobUi(); renderJobs(); };
+      app.querySelectorAll("#plist [data-p]").forEach((b) => b.onclick = () => go("#/job/p/" + encodeURIComponent(b.dataset.p)));
     });
     loadPostings().then((r) => { if (location.hash === "#/job" && r && document.activeElement?.id !== "jq") { /* fresh data */ } }).catch(() => {});
   }
 
-  function postingRow(p) {
+  function postingRow(p, withPlace) {
     const n = (p.drafts || []).length + docsForPosting(p.id).length;
     return `<button class="doc-card" data-p="${esc(p.id)}">
       <span class="doc-main"><span class="doc-title">${esc(p.title)}</span>
+      ${withPlace ? `<span class="doc-sub">${esc(wpName(p))}${typeof p.distance === "number" ? ` · ${Math.round(p.distance)} km` : ""}</span>` : ""}
       <span class="doc-sub">${[fmtDay(p.date), p.number ? "nr. " + p.number : "", p.deadline ? "frist " + esc(p.deadline) : "", n ? `${n} ansøgning${n > 1 ? "er" : ""}` : "ingen ansøgning"].filter(Boolean).join(" · ")}</span></span>
       ${isApplied(p.id) ? `<span class="chip sendt">Søgt</span>` : p.rating && RATING[p.rating] ? `<span class="chip">${RATING[p.rating]}</span>` : ""}
     </button>`;
@@ -1102,7 +1140,7 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
       const w = groupWorkplaces(postings.postings).find((x) => x.name === name);
       if (!w) { $(".wrap").innerHTML = `<div class="empty">Arbejdspladsen findes ikke længere.</div>`; return; }
       const byUnit = new Map();
-      for (const p of w.posts.sort((a, b) => (b.date || "").localeCompare(a.date || ""))) {
+      for (const p of [...w.posts].sort(postCmp[jobUi.sort])) {
         const u = p.unit || "";
         if (!byUnit.has(u)) byUnit.set(u, []);
         byUnit.get(u).push(p);
