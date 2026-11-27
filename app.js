@@ -519,14 +519,32 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     return { text: t ? t[1].trim() : null, notes: n ? n[1].trim() : "", rest };
   }
 
+  // Applications made from a Jobscanner posting may hold only Jobindex's short
+  // summary (saved before the scanner fetched whole postings): swap in the full
+  // posting before Claude reads it. Never shortens what is there.
+  async function refreshJobAd(doc) {
+    if (!doc.postingId || (doc.jobAd || "").length >= 1500) return;
+    try {
+      const p = await getPosting(doc.postingId);
+      const fresh = [p.title, wpName(p), p.url, "", p.postingText || ""].join("\n").trim();
+      if (fresh.length > (doc.jobAd || "").length + 200) {
+        doc.jobAd = fresh; doc.updated = Date.now(); save();
+        const ta = document.querySelector('textarea[data-k="jobAd"]'); if (ta) ta.value = fresh; // so typing there doesn't bring the old text back
+      }
+    } catch (_) {}
+  }
+  const shortAd = (doc) => doc.type === "ansoegning" && doc.jobAd.trim() && doc.jobAd.trim().length < 700;
+
   let aiRun = 0, lastQuestion;
   async function runAi(doc, key, question) {
     const a = AI_ACTIONS[key];
     const cv = pickedCv(doc);
     lastQuestion = question;
-    const prompt = a.build(doc, cv, question);
     const run = ++aiRun;
     sheetAiWaiting(a);
+    await refreshJobAd(doc);
+    if (run !== aiRun) return;
+    const prompt = a.build(doc, cv, question);
     try {
       const { id } = await api("POST", "/ask", { system: SYSTEM_BASE, prompt });
       const started = Date.now();
@@ -1488,7 +1506,8 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
   }
 
   // ---------------------------------------------------------------- AI sheets
-  function aiMenu(doc) {
+  async function aiMenu(doc) {
+    await refreshJobAd(doc);
     const cv = pickedCv(doc);
     const keys = Object.keys(AI_ACTIONS).filter((k) => !AI_ACTIONS[k].types || AI_ACTIONS[k].types.includes(doc.type));
     const blocked = (k) => {
@@ -1502,6 +1521,7 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
       ? (doc.status === "samtale" ? ["samtale", "feedback", "ret", "udkast", "tilpas", "layout", "frit"] : ["udkast", "ret", "feedback", "tilpas", "samtale", "layout", "frit"])
       : ["ret", "feedback", "layout", "frit"];
     openSheet(`<h2>${svg("spark").replace("<svg", '<svg style="width:20px;height:20px;vertical-align:-3px;color:var(--accent)"')} Claude</h2>
+      ${shortAd(doc) ? `<p class="notes" style="margin:0 0 10px"><b>Kun et kort resumé af jobopslaget.</b> Claude skriver bedre med hele opslaget: åbn opslaget, kopiér teksten og sæt den ind under <b>Job</b> øverst.</p>` : ""}
       ${piOnline === false ? `<p class="err">Pi'en svarer ikke lige nu. Du kan godt sende, men svaret kommer først, når Pi'en er tændt.</p>` : ""}
       ${order.filter((k) => keys.includes(k)).map((k) => {
         const a = AI_ACTIONS[k], why = blocked(k);
