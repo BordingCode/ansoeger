@@ -399,3 +399,17 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; justif
 .sortbar .seg .tb { height: 36px; padding: 0 12px; white-space: nowrap; }
 .sortpick { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted, inherit); }
 .sortpick select.inp { width: auto; height: 36px; padding: 0 10px; margin: 0; }
+
+/* Deadlines, "Ny" and the job-tab badge */
+.dl { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 99px; margin-top: 3px; background: var(--surface-2); color: var(--muted); }
+.dl.near { background: #f6e7c8; color: #6a4a0c; }
+.dl.soon { background: #f3d9d7; color: #7a1f19; }
+.dl.over { background: transparent; color: var(--muted); font-weight: 500; padding-left: 0; text-decoration: line-through; }
+.chip.new { background: var(--accent); color: var(--accent-text); font-weight: 700; }
+.tabs .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px; margin-left: 4px; border-radius: 99px; background: #c0392b; color: #fff; vertical-align: 1px; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); padding: 10px 2px 0; }
+.check input { width: 18px; height: 18px; accent-color: var(--accent); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .dl.near { background: #4a3a18; color: #f6dca4; }
+  :root:not([data-theme="light"]) .dl.soon { background: #4d2422; color: #f5c2bd; }
+}

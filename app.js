@@ -71,6 +71,7 @@
     settings: { template: "minstil", accent: ACCENTS[0] },
     docs: [],
     applied: {},  // job-posting id -> { on, t }: "Markér som søgt"
+    hidden: {},   // job-posting id -> { on, t }: "Ikke interesseret"
     deleted: [],  // ids of deleted documents, so a merge never brings them back
     changed: 0,   // last local change (ms)
     synced: 0,    // last successful cloud backup (ms)
@@ -287,10 +288,12 @@
       if (v && (newer || !S.profile[k]) && S.profile[k] !== v) { S.profile[k] = v; changed = true; }
     }
     if (newer && remote.settings) S.settings = { ...S.settings, ...remote.settings };
-    for (const [k, v] of Object.entries(remote.applied || {})) {
-      S.applied = S.applied || {};
-      const l = S.applied[k];
-      if (v && (!l || (v.t || 0) > (l.t || 0))) { S.applied[k] = v; changed = true; }
+    for (const f of ["applied", "hidden"]) {
+      for (const [k, v] of Object.entries(remote[f] || {})) {
+        S[f] = S[f] || {};
+        const l = S[f][k];
+        if (v && (!l || (v.t || 0) > (l.t || 0))) { S[f][k] = v; changed = true; }
+      }
     }
     S.changed = Math.max(S.changed || 0, remote.changed || 0);
     return changed;
@@ -447,6 +450,27 @@ ${doc.type === "ansoegning" && doc.jobAd ? `\n<jobopslag>\n${doc.jobAd}\n</jobop
 ${doc.md}
 </tekst>
 ${cv && doc.type !== "cv" ? `\nTil reference, brugerens CV:\n<cv>\n${cv.md}\n</cv>` : ""}`,
+    },
+    samtale: {
+      icon: "chat", title: "Forbered samtale", desc: "Sandsynlige spørgsmål til jobsamtalen med forslag til svar ud fra din ansøgning og dit CV.",
+      kind: "answer", types: ["ansoegning"], needs: ["jobAd"],
+      build: (doc, cv) => `Brugeren skal til jobsamtale${doc.position ? ` om stillingen som ${doc.position}` : ""}${doc.company ? ` hos ${doc.company}` : ""}. Hjælp med at forberede samtalen, på dansk og konkret til netop dette job:
+${profileBlock()}
+## Det spørger de nok om
+(8-10 sandsynlige spørgsmål ud fra jobopslaget og ansøgningen, de mest sandsynlige først. Under hvert spørgsmål: et kort forslag til svar i brugerens egen stemme, bygget på konkrete erfaringer fra CV'et og ansøgningen. Opfind ingen erfaringer.)
+## Svage punkter de kan spørge ind til
+(Huller eller krav i opslaget, som CV'et ikke dækker godt, og hvordan man ærligt kan svare på dem)
+## Gode spørgsmål du selv kan stille
+(3-5 spørgsmål der viser interesse for netop denne arbejdsplads)
+
+<jobopslag>
+${doc.jobAd}
+</jobopslag>
+
+<ansøgning>
+${doc.md}
+</ansøgning>
+${cv ? `\n<cv>\n${cv.md}\n</cv>` : ""}`,
     },
     layout: {
       icon: "layout", title: "Forbedr opbygning", desc: "Ordner afsnit, overskrifter og rækkefølge, så teksten er let at skimme.",
@@ -924,22 +948,27 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     const sub = d.type === "ansoegning"
       ? [d.company, d.position].filter(Boolean).join(" · ") || "Ingen firma endnu"
       : (mdPlain(d.md).slice(0, 70) || "Tom");
+    const dl = d.type === "ansoegning" && d.status === "kladde" && d.deadline ? deadlineChip(d.deadline) : "";
     return `<button class="doc-card" data-open="${d.id}">
       <span class="doc-ico">${svg(d.type === "cv" ? "cv" : d.type === "ansoegning" ? "letter" : "doc")}</span>
       <span class="doc-main"><span class="doc-title">${d.ref ? '<span class="ref-star" title="Stil-eksempel for Claude">★</span> ' : ""}${esc(d.title || "Uden titel")}</span>
-      <span class="doc-sub">${esc(sub)} · ${fmtShort(d.updated)}</span></span>
+      <span class="doc-sub">${esc(sub)} · ${fmtShort(d.updated)}</span>${dl ? `<span class="doc-sub">${dl}</span>` : ""}</span>
       ${d.type === "ansoegning" ? `<span class="chip ${st[0]}">${st[1]}</span>` : ""}
     </button>`;
   }
   function renderHome() {
     const cvs = sortedDocs("cv"), apps = sortedDocs("ansoegning"), other = sortedDocs("andet");
     const active = apps.filter((a) => a.status !== "afslag").length;
+    // Drafts whose deadline is close (or just passed — maybe it can still go out today)
+    const due = apps.filter((a) => a.status === "kladde" && a.deadline && daysUntil(a.deadline) >= -1 && daysUntil(a.deadline) <= 14)
+      .sort((a, b) => a.deadline.localeCompare(b.deadline));
     app.innerHTML = `
       <div class="bar"><h1>Ansøgeren</h1><button class="pi-dot" id="piDot"></button>
         <button class="icon-btn" id="gear" aria-label="Indstillinger">${svg("gear")}</button></div>
       ${tabsHtml("docs")}
       <div class="wrap">
         ${!S.profile.name ? `<div class="empty" style="margin-top:12px;text-align:left"><strong>Start her:</strong> skriv dit navn og dine kontaktoplysninger under <a href="#/indstillinger">Indstillinger</a>. Så sætter appen dem pænt øverst på CV og ansøgninger.</div>` : ""}
+        ${due.length ? `<div class="section-h"><h2>Frister snart</h2><span class="hint">ikke sendt endnu</span></div>${due.map(card).join("")}` : ""}
         <div class="section-h"><h2>CV</h2></div>
         ${cvs.length ? cvs.map(card).join("") : `<div class="empty">Intet CV endnu. Tryk <strong>Ny</strong> for at importere din .docx eller skrive et nyt.</div>`}
         <div class="section-h"><h2>Ansøgninger</h2><span class="hint">${apps.length ? `${active} aktive` : ""}</span></div>
@@ -986,7 +1015,7 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
   let postings = (() => { try { return JSON.parse(lsGet(LS_POSTINGS) || "null"); } catch (_) { return null; } })();
   let postingsLoading = null;
   const postingDetail = {};
-  const jobUi = Object.assign({ q: "", filter: "alle", view: "steder", sort: "nyeste" },
+  const jobUi = Object.assign({ q: "", filter: "alle", view: "steder", sort: "nyeste", showOld: false },
     (() => { try { const v = JSON.parse(lsGet("ansoeger.jobui.v1") || "{}"); return { view: v.view, sort: v.sort }; } catch (_) { return {}; } })());
   jobUi.view = jobUi.view || "steder"; jobUi.sort = jobUi.sort || "nyeste";
   const saveJobUi = () => { try { localStorage.setItem("ansoeger.jobui.v1", JSON.stringify({ view: jobUi.view, sort: jobUi.sort })); } catch (_) {} };
@@ -1005,20 +1034,56 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     return postingDetail[id];
   }
 
-  const isApplied = (id) => !!(S.applied && S.applied[id] && S.applied[id].on);
+  // A posting counts as applied when it is marked so, or when one of its
+  // applications has left "Kladde" (Sendt / Til samtale / Afslag / Fik jobbet).
+  const flagOn = (f, id) => !!(S[f] && S[f][id] && S[f][id].on);
+  const sentDocs = (id) => S.docs.filter((d) => d.postingId === id && d.status && d.status !== "kladde");
+  const isApplied = (id) => flagOn("applied", id) || sentDocs(id).length > 0;
   function setApplied(id, on) {
     S.applied = S.applied || {};
     S.applied[id] = { on, t: Date.now() };
+    // Keep the application's status in step: newest draft → Sendt, or back to Kladde
+    const docs = S.docs.filter((d) => d.postingId === id).sort((a, b) => b.updated - a.updated);
+    if (on && docs.length && !sentDocs(id).length) { docs[0].status = "sendt"; docs[0].updated = Date.now(); }
+    if (!on) for (const d of docs) if (d.status === "sendt") { d.status = "kladde"; d.updated = Date.now(); }
     save();
+  }
+  const isHidden = (id) => flagOn("hidden", id);
+  function setHidden(id, on) { S.hidden = S.hidden || {}; S.hidden[id] = { on, t: Date.now() }; save(); }
+
+  // ---- deadlines
+  const todayIso = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const daysUntil = (iso) => Math.round((new Date(iso + "T12:00") - new Date(todayIso() + "T12:00")) / 864e5);
+  // "frist om 3 dage" with a colour that gets warmer as it nears
+  function deadlineChip(raw) {
+    const iso = isoDeadline(raw);
+    if (!iso) return "";
+    const n = daysUntil(iso);
+    const txt = n < 0 ? "frist overskredet" : n === 0 ? "frist i dag" : n === 1 ? "frist i morgen" : n <= 30 ? `frist om ${n} dage` : "frist " + fmtDay(iso);
+    return `<span class="dl ${n < 0 ? "over" : n <= 3 ? "soon" : n <= 7 ? "near" : ""}">${txt}</span>`;
+  }
+  // Can no longer be applied for: deadline passed, or no deadline and found long ago
+  const OLD_DAYS = 45;
+  const isExpired = (p) => { const iso = isoDeadline(p.deadline); return iso ? daysUntil(iso) < 0 : !!p.date && daysUntil(p.date) < -OLD_DAYS; };
+
+  // ---- "Ny": postings this phone hasn't shown in the job list before
+  const LS_KNOWN = "ansoeger.jobknown.v1";
+  const knownNow = () => { try { const a = JSON.parse(lsGet(LS_KNOWN) || "null"); return a ? new Set(a) : null; } catch (_) { return null; } };
+  const knownAtStart = knownNow(); // stays fixed for this visit, so "Ny" doesn't vanish while you look
+  const isNew = (p) => !!knownAtStart && !knownAtStart.has(p.id);
+  function markAllKnown() { if (postings) try { localStorage.setItem(LS_KNOWN, JSON.stringify(postings.postings.map((p) => p.id))); } catch (_) {} }
+  function newCount() {
+    const k = knownNow();
+    return k && postings ? postings.postings.filter((p) => !k.has(p.id) && !isHidden(p.id) && !isExpired(p)).length : 0;
   }
   const norm = (s) => String(s || "").toLowerCase().replace(/a\/s|k\/s|s\/i/g, "").replace(/[^a-z0-9æøå]/g, "");
   const RATING = { god: "God match", ok: "OK", maske: "Måske" };
   const fmtDay = (iso) => { const d = iso && new Date(iso + "T12:00"); return d && !isNaN(d) ? d.toLocaleDateString("da-DK", { day: "numeric", month: "short", year: "numeric" }) : ""; };
   const wpName = (p) => p.workplace + (p.unit ? " · " + p.unit : "");
+  const isoDeadline = (s) => { const m = String(s || "").match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/); return m ? `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}` : (/^\d{4}-\d{2}-\d{2}$/.test(s) ? s : ""); };
 
   // ---- Sorting the job list ----
   const SORTS = [["nyeste", "Nyeste først"], ["frist", "Frist snarest"], ["match", "Bedste match"], ["afstand", "Nærmest"], ["navn", "A–Å"]];
-  const todayIso = () => new Date().toISOString().slice(0, 10);
   // Upcoming deadlines first (soonest on top), then no deadline, then expired
   const deadlineKey = (p) => { const d = isoDeadline(p.deadline); if (!d) return "2"; return d >= todayIso() ? "0" + d : "3" + d; };
   // Gymnasium jobs are what the scanner looks for, so they count as a good match
@@ -1064,7 +1129,8 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     return [...by.values()].sort((a, b) => b.latest.localeCompare(a.latest) || a.name.localeCompare(b.name, "da"));
   }
 
-  const tabsHtml = (on) => `<nav class="tabs"><a href="#/" class="${on === "docs" ? "on" : ""}">Dokumenter</a><a href="#/job" class="${on === "job" ? "on" : ""}">Job</a></nav>`;
+  const tabsHtml = (on) => { const n = on === "job" ? 0 : newCount();
+    return `<nav class="tabs"><a href="#/" class="${on === "docs" ? "on" : ""}">Dokumenter</a><a href="#/job" class="${on === "job" ? "on" : ""}">Job${n ? ` <span class="badge">${n} ny${n > 1 ? "e" : ""}</span>` : ""}</a></nav>`; };
 
   function jobsLoadingOr(fn) {
     if (postings) return fn();
@@ -1084,35 +1150,46 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     $("#gear").onclick = () => go("#/indstillinger");
     paintPiDot($("#piDot"));
     jobsLoadingOr(() => {
-      const ws = groupWorkplaces(postings.postings);
       const q = norm(jobUi.q);
-      const shown = sortWorkplaces(ws.filter((w) => (!q || norm(w.name).includes(q) || w.posts.some((p) => norm(p.title).includes(q) || norm(p.unit).includes(q)))
-        && (jobUi.filter === "alle" || (jobUi.filter === "ansoegning" && w.drafts) || (jobUi.filter === "soegt" && w.applied))), jobUi.sort);
-      const total = postings.postings.length;
+      const all = postings.postings;
       const hasDraft = (p) => (p.drafts || []).length || docsForPosting(p.id).length;
-      const shownPosts = postings.postings.filter((p) => (!q || norm(p.workplace).includes(q) || norm(p.title).includes(q) || norm(p.unit).includes(q))
-        && (jobUi.filter === "alle" || (jobUi.filter === "ansoegning" && hasDraft(p)) || (jobUi.filter === "soegt" && isApplied(p.id)))).sort(postCmp[jobUi.sort]);
+      const f = jobUi.filter;
+      // "Alle" = what you can still apply for; the other filters also look back in time
+      const inFilter = (p) => f === "skjulte" ? isHidden(p.id) : !isHidden(p.id) && (
+        f === "ansoegning" ? hasDraft(p) : f === "soegt" ? isApplied(p.id) : (jobUi.showOld || !isExpired(p)));
+      const oldCount = all.filter((p) => !isHidden(p.id) && isExpired(p)).length;
+      const hiddenCount = all.filter((p) => isHidden(p.id)).length;
+      const matchesQ = (p) => !q || norm(p.workplace).includes(q) || norm(p.title).includes(q) || norm(p.unit).includes(q);
+      const shownPosts = all.filter((p) => inFilter(p) && matchesQ(p)).sort(postCmp[jobUi.sort]);
+      // A workplace is listed with only its posts that pass the filter (search matches the place name too)
+      const ws = groupWorkplaces(all.filter(inFilter));
+      const shown = sortWorkplaces(ws.filter((w) => !q || norm(w.name).includes(q) || w.posts.some(matchesQ)), jobUi.sort);
+      const total = all.filter(inFilter).length;
       const flat = jobUi.view === "opslag";
       $(".wrap").innerHTML = `
         <input class="inp" id="jq" type="search" placeholder="Søg arbejdsplads eller stilling" value="${esc(jobUi.q)}" style="margin-top:12px">
-        <div class="filters">${[["alle", "Alle"], ["ansoegning", "Med ansøgning"], ["soegt", "Søgt"]].map(([k, v]) => `<button class="tb ${jobUi.filter === k ? "on" : ""}" data-f="${k}">${v}</button>`).join("")}</div>
+        <div class="filters">${[["alle", "Kan søges"], ["ansoegning", "Med ansøgning"], ["soegt", "Søgt"], ...(hiddenCount ? [["skjulte", `Skjulte (${hiddenCount})`]] : [])].map(([k, v]) => `<button class="tb ${jobUi.filter === k ? "on" : ""}" data-f="${k}">${v}</button>`).join("")}</div>
+        ${f === "alle" && oldCount ? `<label class="check"><input type="checkbox" id="showOld" ${jobUi.showOld ? "checked" : ""}> Vis også udløbne opslag (${oldCount})</label>` : ""}
         <div class="sortbar">
           <div class="seg">${[["steder", "Arbejdspladser"], ["opslag", "Opslag"]].map(([k, v]) => `<button class="tb ${jobUi.view === k ? "on" : ""}" data-v="${k}">${v}</button>`).join("")}</div>
           <label class="sortpick"><span>Sortér</span><select class="inp" id="jsort">${SORTS.map(([k, v]) => `<option value="${k}" ${jobUi.sort === k ? "selected" : ""}>${v}</option>`).join("")}</select></label>
         </div>
-        ${flat ? `<div class="section-h"><h2>Opslag</h2><span class="hint">${shownPosts.length} af ${total} opslag</span></div>
+        ${flat ? `<div class="section-h"><h2>Opslag</h2><span class="hint">${shownPosts.length} opslag</span></div>
         <div id="plist">${shownPosts.length ? shownPosts.map((p) => postingRow(p, true)).join("") : `<div class="empty">Ingen opslag passer.</div>`}</div>`
-        : `<div class="section-h"><h2>Arbejdspladser</h2><span class="hint">${ws.length} steder · ${total} opslag</span></div>
+        : `<div class="section-h"><h2>Arbejdspladser</h2><span class="hint">${shown.length} steder · ${total} opslag</span></div>
         <div id="wlist">${shown.length ? shown.map((w) => `<button class="doc-card" data-w="${esc(w.name)}">
             <span class="doc-ico">${svg("letter")}</span>
             <span class="doc-main"><span class="doc-title">${esc(w.name)}</span>
-            <span class="doc-sub">${w.posts.length} opslag${w.drafts ? ` · ${w.drafts} ansøgning${w.drafts > 1 ? "er" : ""}` : ""} · senest ${fmtDay(w.latest)}</span></span>
-            ${w.applied ? `<span class="chip sendt">Søgt</span>` : ""}
+            <span class="doc-sub">${w.posts.length} opslag${w.drafts ? ` · ${w.drafts} ansøgning${w.drafts > 1 ? "er" : ""}` : ""} · senest ${fmtDay(w.latest)}${typeof w.posts[0].distance === "number" ? ` · ${Math.round(w.posts[0].distance)} km` : ""}</span>
+            ${(() => { const b = bestPost(w, "frist"); return b && !isExpired(b) ? `<span class="doc-sub">${deadlineChip(b.deadline)}</span>` : ""; })()}</span>
+            ${w.posts.some(isNew) ? `<span class="chip new">Ny</span>` : w.applied ? `<span class="chip sendt">Søgt</span>` : ""}
           </button>`).join("") : `<div class="empty">Ingen arbejdspladser passer.</div>`}</div>`}
         <p class="hint" style="text-align:center;margin-top:18px">Jobscanneren opdaterer listen hver dag kl. 18.${postings.synced ? ` Sidst opdateret ${fmtShort(postings.synced)}.` : ""}</p>`;
       const jq = $("#jq");
       jq.oninput = debounce(() => { jobUi.q = jq.value; renderJobs(); const n = $("#jq"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }, 250);
       app.querySelectorAll("[data-f]").forEach((b) => b.onclick = () => { jobUi.filter = b.dataset.f; renderJobs(); });
+      const so = $("#showOld"); if (so) so.onchange = () => { jobUi.showOld = so.checked; renderJobs(); };
+      markAllKnown();
       app.querySelectorAll("[data-w]").forEach((b) => b.onclick = () => go("#/job/w/" + encodeURIComponent(b.dataset.w)));
       app.querySelectorAll("[data-v]").forEach((b) => b.onclick = () => { jobUi.view = b.dataset.v; saveJobUi(); renderJobs(); });
       $("#jsort").onchange = (e) => { jobUi.sort = e.target.value; saveJobUi(); renderJobs(); };
@@ -1126,8 +1203,9 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     return `<button class="doc-card" data-p="${esc(p.id)}">
       <span class="doc-main"><span class="doc-title">${esc(p.title)}</span>
       ${withPlace ? `<span class="doc-sub">${esc(wpName(p))}${typeof p.distance === "number" ? ` · ${Math.round(p.distance)} km` : ""}</span>` : ""}
-      <span class="doc-sub">${[fmtDay(p.date), p.number ? "nr. " + p.number : "", p.deadline ? "frist " + esc(p.deadline) : "", n ? `${n} ansøgning${n > 1 ? "er" : ""}` : "ingen ansøgning"].filter(Boolean).join(" · ")}</span></span>
-      ${isApplied(p.id) ? `<span class="chip sendt">Søgt</span>` : p.rating && RATING[p.rating] ? `<span class="chip">${RATING[p.rating]}</span>` : ""}
+      <span class="doc-sub">${[fmtDay(p.date), p.number ? "nr. " + p.number : "", n ? `${n} ansøgning${n > 1 ? "er" : ""}` : "ingen ansøgning"].filter(Boolean).join(" · ")}</span>
+      ${p.deadline || isExpired(p) ? `<span class="doc-sub">${deadlineChip(p.deadline) || `<span class="dl over">gammelt opslag</span>`}</span>` : ""}</span>
+      ${isApplied(p.id) ? `<span class="chip sendt">Søgt</span>` : isNew(p) ? `<span class="chip new">Ny</span>` : isHidden(p.id) ? `<span class="chip">Skjult</span>` : p.rating && RATING[p.rating] ? `<span class="chip">${RATING[p.rating]}</span>` : ""}
     </button>`;
   }
 
@@ -1137,7 +1215,7 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
       <div class="wrap"></div>`;
     $("#back").onclick = () => go("#/job");
     jobsLoadingOr(() => {
-      const w = groupWorkplaces(postings.postings).find((x) => x.name === name);
+      const w = groupWorkplaces(postings.postings.filter((p) => !isHidden(p.id) || jobUi.filter === "skjulte")).find((x) => x.name === name);
       if (!w) { $(".wrap").innerHTML = `<div class="empty">Arbejdspladsen findes ikke længere.</div>`; return; }
       const byUnit = new Map();
       for (const p of [...w.posts].sort(postCmp[jobUi.sort])) {
@@ -1157,7 +1235,6 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     });
   }
 
-  const isoDeadline = (s) => { const m = String(s || "").match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/); return m ? `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}` : (/^\d{4}-\d{2}-\d{2}$/.test(s) ? s : ""); };
   function docFromPosting(p, md, label) {
     return newDoc("ansoegning", {
       title: label || p.title, company: wpName(p), position: p.title, deadline: isoDeadline(p.deadline),
@@ -1181,11 +1258,13 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
         <div class="job-head">
           <div class="hint">${esc(wpName(p))}</div>
           <h2>${esc(p.title)}</h2>
-          <div class="hint">${[fmtDay(p.date) && "Fundet " + fmtDay(p.date), p.number && "nr. " + p.number, p.deadline && "Frist " + esc(p.deadline), p.address && esc(p.address)].filter(Boolean).join(" · ")}</div>
+          <div class="hint">${[fmtDay(p.date) && "Fundet " + fmtDay(p.date), p.number && "nr. " + p.number, p.deadline && "Frist " + (fmtDay(isoDeadline(p.deadline)) || esc(p.deadline)), typeof p.distance === "number" && Math.round(p.distance) + " km fra Aarhus", p.address && esc(p.address)].filter(Boolean).join(" · ")}</div>
+          ${p.deadline ? `<div style="margin-top:6px">${deadlineChip(p.deadline)}</div>` : isExpired(p) ? `<div style="margin-top:6px"><span class="dl over">gammelt opslag – findes det stadig?</span></div>` : ""}
           ${p.reason ? `<p class="notes" style="margin:10px 0 0">${p.rating && RATING[p.rating] ? `<b>${RATING[p.rating]}:</b> ` : ""}${esc(p.reason)}</p>` : ""}
           <div class="row" style="margin-top:12px">
             ${p.url ? `<a class="btn" href="${esc(p.url)}" target="_blank" rel="noopener">${svg("eye")} Se opslaget</a>` : ""}
             <button class="btn ${isApplied(p.id) ? "primary" : ""}" id="applied">${isApplied(p.id) ? "✓ Søgt" : "Markér som søgt"}</button>
+            <button class="btn" id="hide">${isHidden(p.id) ? "Vis igen" : "Ikke interesseret"}</button>
           </div>
         </div>
         <div class="section-h"><h2>Ansøgninger</h2></div>
@@ -1196,10 +1275,28 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
             <button class="btn block" data-draft="${i}" style="margin:6px 0 12px">${svg("pen")} Åbn i Ansøgeren og ret</button>
           </details>`).join("")}
         ${!own.length && !drafts.length ? `<div class="empty">Der er ikke skrevet en ansøgning til dette job endnu.</div>` : ""}
-        <button class="btn block" id="newFor" style="margin-top:10px">${svg("plus")} Ny ansøgning til dette job</button>
+        ${!own.length ? `<button class="btn ai block" id="draftFor" style="margin-top:10px">${svg("spark")} Skriv udkast med Claude</button>` : ""}
+        <button class="btn block" id="newFor" style="margin-top:10px">${svg("plus")} ${own.length ? "Ny ansøgning til dette job" : "Skriv selv (tom ansøgning)"}</button>
         ${siblings.length ? `<div class="section-h"><h2>Tidligere hos ${esc(p.workplace)}</h2></div>${siblings.map(postingRow).join("")}` : ""}
         ${p.postingText ? `<details class="meta" style="margin-top:16px"><summary>Opslagets tekst</summary><div class="posting-text">${esc(p.postingText)}</div></details>` : ""}`;
-      $("#applied").onclick = () => { setApplied(p.id, !isApplied(p.id)); toast(isApplied(p.id) ? "Markeret som søgt" : "Ikke længere markeret som søgt"); renderPosting(id); };
+      $("#applied").onclick = () => {
+        const on = !isApplied(p.id);
+        setApplied(p.id, on);
+        toast(on ? "Markeret som søgt" + (own.length ? " (ansøgningen står nu som Sendt)" : "") : isApplied(p.id) ? "Ansøgningen står stadig som Til samtale/Afslag/Fik jobbet" : "Ikke længere markeret som søgt");
+        renderPosting(id);
+      };
+      $("#hide").onclick = () => {
+        const on = !isHidden(p.id);
+        setHidden(p.id, on);
+        if (on) { toast("Skjult. Du finder det under Skjulte."); history.back(); } else { toast("Vises igen"); renderPosting(id); }
+      };
+      const df = $("#draftFor");
+      if (df) df.onclick = () => {
+        if (!cvDocs().length) return toast("Importér eller skriv dit CV først, så Claude har noget at bygge på.");
+        const doc = docFromPosting(p, "");
+        go("#/doc/" + doc.id);
+        setTimeout(() => runAi(doc, "udkast"), 150);
+      };
       app.querySelectorAll("[data-open]").forEach((b) => b.onclick = () => go("#/doc/" + b.dataset.open));
       app.querySelectorAll("[data-p]").forEach((b) => b.onclick = () => go("#/job/p/" + encodeURIComponent(b.dataset.p)));
       app.querySelectorAll("[data-draft]").forEach((b) => b.onclick = () => {
@@ -1319,6 +1416,12 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     app.querySelectorAll("[data-k]").forEach((el) => {
       el.addEventListener(el.tagName === "SELECT" ? "change" : "input", () => {
         doc[el.dataset.k] = el.value; doc.updated = Date.now(); save();
+        if (el.dataset.k === "status" && doc.postingId) {
+          // Follow the status: no longer a draft = applied (and back again)
+          S.applied = S.applied || {};
+          S.applied[doc.postingId] = { on: doc.status !== "kladde" || sentDocs(doc.postingId).length > 0, t: Date.now() };
+          save();
+        }
         const s = STATUSES.find((x) => x[0] === doc.status) || STATUSES[0];
         const info = $(".sum-info"); if (info) info.textContent = [doc.company, s[1]].filter(Boolean).join(" · ");
       });
@@ -1395,7 +1498,9 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
       if ((a.needs || []).includes("cv") && !cv) return "Importér eller skriv dit CV først.";
       return "";
     };
-    const order = doc.type === "ansoegning" ? ["udkast", "ret", "feedback", "tilpas", "layout", "frit"] : ["ret", "feedback", "layout", "frit"];
+    const order = doc.type === "ansoegning"
+      ? (doc.status === "samtale" ? ["samtale", "feedback", "ret", "udkast", "tilpas", "layout", "frit"] : ["udkast", "ret", "feedback", "tilpas", "samtale", "layout", "frit"])
+      : ["ret", "feedback", "layout", "frit"];
     openSheet(`<h2>${svg("spark").replace("<svg", '<svg style="width:20px;height:20px;vertical-align:-3px;color:var(--accent)"')} Claude</h2>
       ${piOnline === false ? `<p class="err">Pi'en svarer ikke lige nu. Du kan godt sende, men svaret kommer først, når Pi'en er tændt.</p>` : ""}
       ${order.filter((k) => keys.includes(k)).map((k) => {
@@ -1444,6 +1549,8 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
     let buttons = "";
     if (hasText && a.kind === "cv") {
       buttons = `<button class="btn primary" id="saveCv">${svg("cv")} Gem som nyt CV</button>`;
+    } else if (key === "samtale" && ans.rest) {
+      buttons = `<button class="btn primary" id="saveNote">${svg("doc")} Gem som tekst</button>`;
     } else if (hasText) {
       buttons = `<button class="btn primary" id="useText">${svg("check")} ${doc.md.trim() ? "Erstat min tekst" : "Brug teksten"}</button>`;
     }
@@ -1459,6 +1566,11 @@ Svar kort og konkret på dansk. Hvis du foreslår en ny version af teksten, så 
       b.querySelector("[data-close]").onclick = closeSheet;
       $("#copyRes", b).onclick = async () => {
         try { await navigator.clipboard.writeText(mdPlain(copyTarget)); toast("Kopieret"); } catch (_) { toast("Kunne ikke kopiere"); }
+      };
+      const sn = $("#saveNote", b);
+      if (sn) sn.onclick = () => {
+        const d = newDoc("andet", { title: `Samtale – ${doc.company || doc.position || doc.title}`, md: ans.rest });
+        closeSheet(); go("#/doc/" + d.id); toast("Gemt under Andre tekster");
       };
       const use = $("#useText", b);
       if (use) use.onclick = () => { replaceDocText(doc, ans.text, a.title.toLowerCase()); closeSheet(); toast("Teksten er opdateret ✓"); if (location.hash === "#/vis/" + doc.id) renderPreview(doc); };
